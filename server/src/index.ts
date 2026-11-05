@@ -170,7 +170,6 @@ function relayToPartner(socket: Socket, eventName: string, payload: unknown): vo
 
 io.on("connection", (socket) => {
   rateWindows.set(socket.id, new Map());
-  matchmaker.join(socket.id);
 
   socket.on("offer", (payload: unknown) => {
     if (allowEvent(socket.id, "signal", 30, 10_000)) relayToPartner(socket, "offer", payload);

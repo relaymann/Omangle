@@ -480,6 +480,12 @@ export default function VideoChat() {
   }, [socket]);
 
   useEffect(() => {
+    const handleSocketConnect = () => {
+      socket?.emit("matchmaking:join");
+    };
+
+    socket?.on("connect", handleSocketConnect);
+    socket?.on("disconnect", userDisConnected);
     socket?.on("user:connect", handleUserJoined);
     socket?.on("offer", handleIncommingOffer);
     socket?.on("answer", handleIncommingAnswer);
@@ -487,7 +493,12 @@ export default function VideoChat() {
     socket?.on("peer:nego:final", handleNegotiationFinal);
     socket?.on("partnerDisconnected", userDisConnected);
 
+    // The socket may already be connected before this screen mounts.
+    if (socket?.connected) handleSocketConnect();
+
     return () => {
+      socket?.off("connect", handleSocketConnect);
+      socket?.off("disconnect", userDisConnected);
       socket?.off("user:connect", handleUserJoined);
       socket?.off("offer", handleIncommingOffer);
       socket?.off("answer", handleIncommingAnswer);
