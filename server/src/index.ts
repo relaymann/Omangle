@@ -101,8 +101,10 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 function validTarget(payload: unknown, socket: Socket, matcher: Matchmaker): string | null {
   if (!isRecord(payload) || typeof payload.to !== "string") return null;
   const partnerId = matcher.getPartner(socket.id);
-  const expectedPeerToken = partnerId ? peerTokens.get(partnerId) : undefined;
-  return expectedPeerToken && payload.to === expectedPeerToken ? partnerId : null;
+  if (!partnerId) return null;
+  const expectedPeerToken = peerTokens.get(partnerId);
+  if (!expectedPeerToken || payload.to !== expectedPeerToken) return null;
+  return partnerId;
 }
 
 function validDescription(value: unknown): boolean {
