@@ -1,129 +1,88 @@
-# RhinoMeet
+# Omangle
 
-RhinoMeet is a WebRTC-based video chat application inspired by Omegle. It allows users to connect and communicate in real-time via audio, video, and text chat. The application leverages WebSockets for signaling and WebRTC for media transmission between peers. Users can join random video chats with other connected users, enjoy features like screen sharing, skipping users, and real-time text messaging.
+Omangle is a real-time random conversation platform inspired by Omegle and modern WebRTC chat services. The goal is a fast, mobile-friendly experience for meeting people through video, voice, and text.
 
-## Features
+> This repository contains an inherited early prototype. This update establishes a more reliable, secure, and testable foundation; it does not certify the existing media UI as production-ready.
 
-- **Real-time video and audio chat**: Connect instantly with peers using WebRTC technology for seamless communication.
-- **Random user matching**: Enjoy the spontaneity of random pairing, just like Omegle, for engaging video chat sessions.
-- **Screen sharing**: Share your screen with the connected user during your conversation for added interactivity.
-- **Text messaging**: Send and receive real-time messages while on a video chat for a complete chat experience.
-- **Skip functionality**: Easily skip the current user and connect with a new one in seconds.
-- **Peer-to-peer connection**: High-quality, efficient media transmission powered by WebRTC for smooth video and audio calls.
-- **Echo cancellation and noise suppression**: Built-in browser features ensure crisp and clear audio without background noise or echoes.
+## Principles
 
-## Installation
+- Fast to join, mobile-first, and responsive.
+- Reliable media: local preview is not proof of success; both participants must receive each other's media.
+- Privacy by default: do not expose socket IDs, IP addresses, or unnecessary profile data.
+- Safety built in: skip, block, report, rate limits, and moderation before public launch.
+- Honest status: never show a media control as active unless the browser confirms the track state.
 
-To install and run this project locally, follow these steps:
+## Stack
 
-1. Clone the repository:
+- Frontend: React 18, TypeScript, Vite, Tailwind CSS
+- Backend: Node.js, TypeScript, Express, Socket.IO
+- Media: browser WebRTC; direct paths where possible, TURN relay when required
 
-    ```bash
-    git clone https://github.com/Shobhit2205/RhinoMeet.git
-    ```
+The signaling server coordinates matchmaking and exchanges WebRTC negotiation data. It must not receive or store raw media.
 
-2. Navigate to the folder:
+## Layout
 
-    ```bash
-    cd RhinoMeet
-    ```
+- client/ — browser application
+- server/ — HTTP, Socket.IO signaling, and matchmaking
+- docs/ARCHITECTURE.md — system boundaries and lifecycle contracts
+- docs/ROADMAP.md — staged implementation plan
+- DEVELOPMENT_RULES.md — mandatory engineering and audit requirements
 
-### Backend Setup
+## Local development
 
-1. Install dependencies:
+Requirements: Node.js 20+ and npm.
 
-    ```bash
-    cd server
-    npm install
-    ```
+Backend:
+~~~bash
+cd server
+npm ci
+cp .env.example .env
+npm run dev
+~~~
 
-2. Set up environment variables:
+Frontend, in a second terminal:
+~~~bash
+cd client
+npm ci
+cp .env.example .env
+npm run dev
+~~~
 
-   ```bash
-    cp .env.example .env
-    ```
+The backend listens on port 8000 by default; Vite normally serves at http://localhost:5173. Set CLIENT_URLS in server/.env to a comma-separated list of exact allowed frontend origins when testing from another device or deploying. Do not use wildcard origins in production.
 
-3. Start the backend server:
+## Quality checks
 
-    ```bash
-    npm run start:dev
-    ```
+Frontend:
+~~~bash
+cd client
+npm ci
+npm run lint
+npm run build
+~~~
 
-    The server should now be running on [http://localhost:8000](http://localhost:8000).
+Backend:
+~~~bash
+cd server
+npm ci
+npm run build
+npm test
+~~~
 
-### Frontend Setup
+GitHub Actions runs these checks on pushes and pull requests. A green build does not replace the two required audits or real two-device media testing.
 
-1. starting frontend and Install dependencies:
+## Media test requirement
 
-    ```bash
-    cd client
-    npm install
-    ```
+For every media-related change, test with two independent participants/devices. Confirm:
+1. Both participants see their own preview and the other's live video.
+2. Audio is audible in both directions.
+3. Mute, unmute, camera off/on, and device switching are reflected correctly at the other end.
+4. Screen sharing arrives at the remote participant and stops cleanly from either the app control or browser UI.
+5. Skip, disconnect, reconnect, permission denial, and device removal do not leave stale tracks or sessions.
 
-2. Set up environment variables:
+A local-only browser test cannot prove remote delivery. Record unsupported devices, permission failures, and untested network paths honestly.
 
-    ```bash
-    cp .env.example .env
-    ```
+## Deployment notes
 
-3. Start the Frontend:
+The frontend can be hosted on a static/CDN platform. The signaling backend needs a persistent Node-capable host that supports WebSockets and correct proxy timeouts. Production requires HTTPS/WSS, an exact frontend origin allowlist, configured STUN/TURN infrastructure, and browser/device testing. Public STUN servers alone are not a production connectivity strategy.
 
-    ```bash
-    npm run dev
-    ```
-
-    The client should now be running on [http://localhost:5173](http://localhost:5173).
-
-## Usage
-
-1. Open your browser and navigate to the frontend of your application.
-2. Once connected, the application will randomly match you with another online user.
-3. You can engage in video chat, share your screen, send messages, and skip users.
-
-## Contributing
-
-1. Fork the repository.
-2. Create a new branch:
-
-    ```bash
-    git checkout -b feature/your-feature
-    ```
-
-3. Make your changes and commit them:
-
-    ```bash
-    git commit -m "Add a new feature"
-    ```
-
-4. Push your changes:
-
-    ```bash
-    git push origin feature/your-feature
-    ```
-
-5. Submit a pull request.
-
-## Acknowledgments
-
-- Inspired by [Omegle](https://www.omegle.com/).
-- Powered by WebRTC and WebSockets for real-time communication.
-
-## Author
-
-- [Shobhit Pandey](https://github.com/Shobhit2205) - [shobhitpandey2205@gmail.com](shobhitpandey2205@gmail.com)
-
-## Screenshots
-
-![Screenshot 1](screenshots/screenshot1.png)
-
-![Screenshot 2](screenshots/screenshot2.png)
-
-![Screenshot 3](screenshots/screenshot3.png)
-
-![Screenshot 4](screenshots/screenshot4.png)
-
-![Screenshot 5](screenshots/screenshot5.png)
-
-<!--
-Keywords: omegle, omegle clone github, videochat application github, random chat, github, mern stack project github, mern project, typescript, nodejs, socket-io, socketio, webrtc, websocket, real time communication, learn webrtc, open source project, Random Video chat, Random call, Video call, omegel clone, omegle type apps, Rhinomeet, rhinomeet.com, meet, random chat, messages, video chat, screen sharing, real-time messaging, secure video calls
--->
+See docs/ARCHITECTURE.md and docs/ROADMAP.md before extending the system.
