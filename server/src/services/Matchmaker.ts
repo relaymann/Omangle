@@ -2,7 +2,7 @@ export type PartnerLeftReason = "skipped" | "disconnected" | "left";
 
 export type MatchmakerEvents = {
   matched: (offererId: string, answererId: string) => void;
-  partnerLeft: (socketId: string, reason: PartnerLeftReason) => void;
+  partnerLeft: (remainingSocketId: string, reason: PartnerLeftReason, departedSocketId: string) => void;
 };
 
 export class Matchmaker {
@@ -49,7 +49,7 @@ export class Matchmaker {
 
     this.unlink(socketId, partnerId);
     this.recentPairs.set(this.pairKey(socketId, partnerId), this.now() + this.cooldownMs);
-    this.events.partnerLeft(partnerId, "skipped");
+    this.events.partnerLeft(partnerId, "skipped", socketId);
     this.join(partnerId);
     this.join(socketId);
   }
@@ -60,7 +60,7 @@ export class Matchmaker {
     if (!partnerId) return;
 
     this.unlink(socketId, partnerId);
-    this.events.partnerLeft(partnerId, "disconnected");
+    this.events.partnerLeft(partnerId, "disconnected", socketId);
     this.join(partnerId);
   }
 
@@ -70,7 +70,7 @@ export class Matchmaker {
     if (!partnerId) return;
 
     this.unlink(socketId, partnerId);
-    this.events.partnerLeft(partnerId, "left");
+    this.events.partnerLeft(partnerId, "left", socketId);
     this.join(partnerId);
   }
 

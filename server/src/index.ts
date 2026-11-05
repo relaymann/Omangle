@@ -24,8 +24,12 @@ const allowedOrigins = (configuredOrigins ?? "http://localhost:5173,http://127.0
   .map((origin) => origin.trim())
   .filter(Boolean);
 
+if (allowedOrigins.length === 0) {
+  throw new Error("CLIENT_URLS must contain at least one valid origin.");
+}
+
 const originAllowed = (origin?: string): boolean => {
-  if (!origin) return !isProduction;
+  if (!origin) return true;
   return allowedOrigins.includes(origin);
 };
 
@@ -60,7 +64,7 @@ const io = new Server(httpServer, {
 
 io.use((socket, next) => {
   const origin = socket.handshake.headers.origin;
-  if (!originAllowed(origin)) {
+  if ((!origin && isProduction) || !originAllowed(origin)) {
     next(new Error("Origin is not allowed."));
     return;
   }
@@ -69,6 +73,7 @@ io.use((socket, next) => {
 
 type RateWindow = { startedAt: number; count: number };
 const rateWindows = new Map<string, Map<string, RateWindow>>();
+const peerTokens = new Map<string, string>();
 
 function allowEvent(socketId: string, eventName: string, limit: number, windowMs: number): boolean {
   const now = Date.now();
@@ -96,7 +101,8 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 function validTarget(payload: unknown, socket: Socket, matcher: Matchmaker): string | null {
   if (!isRecord(payload) || typeof payload.to !== "string") return null;
   const partnerId = matcher.getPartner(socket.id);
-  return partnerId && payload.to === partnerId ? partnerId : null;
+  const expectedPeerToken = partnerId ? peerTokens.get(partnerId) : undefined;
+  return expectedPeerToken && payload.to === expectedPeerToken ? partnerId : null;
 }
 
 function validDescription(value: unknown): boolean {
@@ -121,13 +127,20 @@ function validSignalPayload(eventName: string, payload: Record<string, unknown>)
 const matchmaker = new Matchmaker({
   matched: (offererId, answererId) => {
     const matchId = randomUUID();
-    io.to(offererId).emit("user:connect", answererId);
-    io.to(offererId).emit("match:found", { matchId, peerId: answererId, role: "offerer" });
-    io.to(answererId).emit("match:found", { matchId, peerId: offererId, role: "answerer" });
+    const offererToken = randomUUID();
+    const answererToken = randomUUID();
+    peerTokens.set(offererId, offererToken);
+    peerTokens.set(answererId, answererToken);
+
+    io.to(offererId).emit("user:connect", answererToken);
+    io.to(offererId).emit("match:found", { matchId, peerId: answererToken, role: "offerer" });
+    io.to(answererId).emit("match:found", { matchId, peerId: offererToken, role: "answerer" });
   },
-  partnerLeft: (socketId, reason: PartnerLeftReason) => {
-    if (reason === "skipped") io.to(socketId).emit("skipped");
-    else io.to(socketId).emit("partnerDisconnected");
+  partnerLeft: (remainingSocketId, reason: PartnerLeftReason, departedSocketId) => {
+    peerTokens.delete(remainingSocketId);
+    peerTokens.delete(departedSocketId);
+    if (reason === "skipped") io.to(remainingSocketId).emit("skipped");
+    else io.to(remainingSocketId).emit("partnerDisconnected");
   }
 });
 
@@ -138,7 +151,13 @@ function relayToPartner(socket: Socket, eventName: string, payload: unknown): vo
     return;
   }
 
-  const outgoing: Record<string, unknown> = { from: socket.id };
+  const senderToken = peerTokens.get(socket.id);
+  if (!senderToken) {
+    socket.emit("protocol:error", { code: "MATCH_TOKEN_EXPIRED" });
+    return;
+  }
+
+  const outgoing: Record<string, unknown> = { from: senderToken };
   if (eventName === "offer" || eventName === "peer:nego:needed") outgoing.offer = payload.offer;
   if (eventName === "answer" || eventName === "peer:nego:done") outgoing.answer = payload.answer;
   if (eventName === "ice-candidate") outgoing.candidate = payload.candidate;
@@ -185,7 +204,9 @@ io.on("connection", (socket) => {
       return;
     }
 
-    io.to(target).emit("message:recieved", { message, from: socket.id });
+    const senderToken = peerTokens.get(socket.id);
+    if (!senderToken) return;
+    io.to(target).emit("message:recieved", { message, from: senderToken });
   });
 
   socket.on("skip", () => {
@@ -196,6 +217,7 @@ io.on("connection", (socket) => {
 
   socket.on("disconnect", () => {
     matchmaker.disconnect(socket.id);
+    peerTokens.delete(socket.id);
     rateWindows.delete(socket.id);
   });
 });
