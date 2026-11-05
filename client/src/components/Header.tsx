@@ -16,7 +16,7 @@ export default function Header() {
         >
           <LogoContent />
         </svg>
-        <div className="text-xl font-semibold font-serif">RhinoMeet</div>
+        <div className="text-xl font-semibold font-serif">Omangle</div>
       </a>
       <ModeToggle />
     </header>

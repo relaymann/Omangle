@@ -26,14 +26,14 @@ export default function Home() {
   return (
     <>
       <Helmet>
-        <title>RhinoMeet - Connect, Chat, Collaborate</title>
+        <title>Omangle - Connect, Chat, Collaborate</title>
         <meta
           name="description"
-          content="RhinoMeet is an innovative video chat application designed to connect users from all around the world for spontaneous and engaging conversations. Built with a focus on ease of use and seamless interaction, RhinoMeet allows users to effortlessly start video calls, share screens, and exchange messages in real-time. Whether you're seeking to meet new people, collaborate on projects, or simply enjoy face-to-face interactions, RhinoMeet delivers a smooth experience with user-friendly features. It prioritizes privacy, utilizing encrypted connections to ensure that all communications are secure. The platform's sleek and modern design, combined with features like quick user pairing, screen sharing, and integrated messaging, makes RhinoMeet a go-to choice for both casual and professional video chatting."
+          content="Omangle is an innovative video chat application designed to connect users from all around the world for spontaneous and engaging conversations. Built with a focus on ease of use and seamless interaction, Omangle allows users to effortlessly start video calls, share screens, and exchange messages in real-time. Whether you're seeking to meet new people, collaborate on projects, or simply enjoy face-to-face interactions, Omangle delivers a smooth experience with user-friendly features. It prioritizes privacy, utilizing encrypted connections to ensure that all communications are secure. The platform's sleek and modern design, combined with features like quick user pairing, screen sharing, and integrated messaging, makes Omangle a go-to choice for both casual and professional video chatting."
         />
         <meta
           name="keywords"
-          content="omegle, Random Video chat, Random call, Video call, omegle clone, omegle type apps, Rhinomeet, rhinomeet.com, meet, random chat, messages, video chat, screen sharing, real-time messaging, secure video calls"
+          content="omegle, Random Video chat, Random call, Video call, omegle clone, omegle type apps, Rhinomeet, omangle, meet, random chat, messages, video chat, screen sharing, real-time messaging, secure video calls"
         />
       </Helmet>
       <main className="flex flex-col justify-center h-full mx-auto w-full p-4 lg:p-8">
@@ -54,27 +54,27 @@ export default function Home() {
               </svg>
             </div>
             <h1 className="text-3xl sm:text-4xl md:text-5xl lg:text-6xl font-bold font-serif mb-2 ">
-              RhinoMeet
+              Omangle
             </h1>
             <p className="text-base sm:text-lg md:text-xl mb-4 sm:mb-6 ">
-              Connect. Chat. Collaborate.
+              Meet. Chat. Connect.
             </p>
           </div>
 
           {/* Description & Call-to-Action Section */}
           <div className="bg-gradient-to-r from-teal-500 to-blue-600 shadow-xl rounded-3xl p-6 md:p-8 w-full lg:w-[60%] mx-0 backdrop-blur-lg bg-opacity-60 border border-teal-300">
             <p className="text-sm sm:text-base md:text-lg mb-6 md:mb-8 leading-relaxed text-gray-200">
-              RhinoMeet is an innovative video chat application designed to connect
+              Omangle is an innovative video chat application designed to connect
               users from all around the world for spontaneous and engaging
               conversations. Built with a focus on ease of use and seamless
-              interaction, RhinoMeet allows users to effortlessly start video
+              interaction, Omangle allows users to effortlessly start video
               calls, share screens, and exchange messages in real-time. Whether
               you're seeking to meet new people, collaborate on projects, or simply
-              enjoy face-to-face interactions, RhinoMeet delivers a smooth experience
+              enjoy face-to-face interactions, Omangle delivers a smooth experience
               with user-friendly features. It prioritizes privacy, utilizing encrypted
               connections to ensure that all communications are secure. The platform's
               sleek and modern design, combined with features like quick user pairing,
-              screen sharing, and integrated messaging, makes RhinoMeet a go-to choice
+              screen sharing, and integrated messaging, makes Omangle a go-to choice
               for both casual and professional video chatting.
             </p>
 
@@ -87,7 +87,7 @@ export default function Home() {
                 Start Your Journey
               </Button>
               {/* <a
-                href="https://github.com/Shobhit2205/RhinoMeet"
+                href="https://github.com/Shobhit2205/Omangle"
                 target="_blank"
                 rel="noopener noreferrer"
                 className="w-full sm:w-auto"
@@ -103,7 +103,7 @@ export default function Home() {
             </div>
 
             <div className="text-xs sm:text-sm text-center mt-4 text-teal-100">
-              By using RhinoMeet, you agree to our Terms of Service and Privacy
+              By using Omangle, you agree to our Terms of Service and Privacy
               Policy.
             </div>
           </div>
