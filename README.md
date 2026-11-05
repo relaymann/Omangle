@@ -18,7 +18,7 @@ Omangle is a real-time random conversation platform inspired by Omegle and moder
 - Backend: Node.js, TypeScript, Express, Socket.IO
 - Media: browser WebRTC; direct paths where possible, TURN relay when required
 
-The signaling server coordinates matchmaking and exchanges WebRTC negotiation data. It must not receive or store raw media. The browser registers match and signaling listeners before requesting queue entry, and re-enters matchmaking after a socket reconnect.
+The signaling server coordinates matchmaking and exchanges WebRTC negotiation data. It must not receive or store raw media. The browser registers match and signaling listeners before requesting queue entry, and re-enters matchmaking after a socket reconnect. Public-domain canonical and social-preview URLs are intentionally omitted until the production domain is selected.
 
 ## Layout
 
