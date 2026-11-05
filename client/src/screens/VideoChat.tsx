@@ -214,6 +214,7 @@ export default function VideoChat() {
 
   const handleUserJoined = useCallback(
     async (remoteId: string) => {
+      setFlag(false);
       setRemoteSocketId(remoteId);
       const offer = await peerservice.getOffer();
 
@@ -225,6 +226,7 @@ export default function VideoChat() {
 
   const handleIncommingOffer = useCallback(
     async ({ offer, from }: Offer) => {
+      setFlag(false);
       setRemoteSocketId(from);
       await getUserStream();
 

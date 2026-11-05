@@ -11,7 +11,7 @@
 ## Phase 1 — client/session lifecycle
 
 - Replace the module-global peer connection with one MediaSession instance per match.
-- Add typed Socket.IO client events and connection/reconnection state.
+- Add typed Socket.IO client events and connection/reconnection state; attach listeners before queue entry and rejoin after reconnect.
 - Implement explicit states: idle → requesting permissions → waiting → matched → negotiating → connected → ending → idle.
 - Make join/skip/leave idempotent and cancel stale async work using match/session IDs.
 - Add responsive, accessible video/voice/text layouts and real empty/error states.

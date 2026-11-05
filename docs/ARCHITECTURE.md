@@ -29,7 +29,7 @@ The application server owns socket identity, queue membership, active pairing, a
 
 - A browser opens a Socket.IO connection over HTTPS/WSS in production.
 - The server places the guest socket into matchmaking.
-- The server pairs two eligible sockets and notifies both. One side is designated offerer to avoid simultaneous initial offers.
+- The client registers its match/signaling listeners before requesting queue entry, and repeats that request after a socket reconnect. The server pairs two eligible sockets and notifies both. One side is designated offerer to avoid simultaneous initial offers.
 - Peers exchange SDP and ICE through the signaling server. The server checks that each message comes from the currently paired socket and routes it only to that peer.
 - WebRTC attempts a direct encrypted path. ICE uses configured STUN/TURN servers; TURN is required for restrictive networks.
 - A participant may skip, leave, or disconnect. Both sides discard the old peer connection and tracks before another match starts.
