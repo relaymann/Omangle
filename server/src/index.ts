@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHmac, randomUUID } from "node:crypto";
 import cors from "cors";
 import dotenv from "dotenv";
 import express from "express";
@@ -44,6 +44,41 @@ app.use(cors({
 
 app.get("/", (_request, response) => {
   response.json({ service: "omangle-signaling", status: "ok" });
+});
+
+
+const turnUrls = (process.env.TURN_URLS ?? "").split(",").map((url) => url.trim()).filter(Boolean);
+const turnSharedSecret = process.env.TURN_SHARED_SECRET ?? "";
+const turnCredentialTtl = Number(process.env.TURN_CREDENTIAL_TTL_SECONDS ?? 600);
+if (turnUrls.some((url) => !/^(turn|turns):/i.test(url))) throw new Error("TURN_URLS may contain only turn: or turns: URLs.");
+if (turnUrls.length > 0 && !turnSharedSecret.trim()) throw new Error("TURN_SHARED_SECRET is required when TURN_URLS is configured.");
+if (!Number.isInteger(turnCredentialTtl) || turnCredentialTtl < 60 || turnCredentialTtl > 86_400) throw new Error("TURN_CREDENTIAL_TTL_SECONDS must be between 60 and 86400.");
+
+const iceRequestWindows = new Map<string, { startedAt: number; count: number }>();
+app.get("/api/ice-servers", (request, response) => {
+  const clientKey = request.ip || "unknown";
+  const now = Date.now();
+  const current = iceRequestWindows.get(clientKey);
+  if (current && now - current.startedAt < 60_000 && current.count >= 30) {
+    response.setHeader("Retry-After", "60");
+    response.status(429).json({ error: "Too many ICE configuration requests." });
+    return;
+  }
+  if (!current || now - current.startedAt >= 60_000) iceRequestWindows.set(clientKey, { startedAt: now, count: 1 });
+  else current.count += 1;
+  if (iceRequestWindows.size > 10_000) {
+    for (const [key, window] of iceRequestWindows) if (now - window.startedAt >= 60_000) iceRequestWindows.delete(key);
+  }
+  response.setHeader("Cache-Control", "no-store, private");
+  const iceServers: Array<{ urls: string[]; username?: string; credential?: string; credentialType?: "password" }> = [
+    { urls: ["stun:stun.l.google.com:19302", "stun:global.stun.twilio.com:3478"] }
+  ];
+  if (turnUrls.length) {
+    const username = `${Math.floor(now / 1000) + turnCredentialTtl}:${randomUUID()}`;
+    const credential = createHmac("sha1", turnSharedSecret).update(username).digest("base64");
+    iceServers.push({ urls: turnUrls, username, credential, credentialType: "password" });
+  }
+  response.status(200).json({ iceServers, turnConfigured: turnUrls.length > 0, expiresInSeconds: turnUrls.length ? turnCredentialTtl : null });
 });
 
 app.get("/health", (_request, response) => {
