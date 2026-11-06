@@ -29,7 +29,7 @@ function MediaVideo({ stream, muted = false, className = "" }: { stream: MediaSt
     };
   }, [stream]);
 
-  return <video ref={videoRef} className={className} autoPlay playsInline muted={muted} />;
+  return <video ref={videoRef} className={className} autoPlay playsInline controls={!muted} muted={muted} />;
 }
 
 interface Offer {
