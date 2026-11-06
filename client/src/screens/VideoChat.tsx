@@ -40,6 +40,9 @@ export default function VideoChat() {
   const [isMicOn, setIsMicOn] = useState(true);
   const localStreamRef = useRef<MediaStream | null>(null);
   const localStreamPromiseRef = useRef<Promise<MediaStream> | null>(null);
+  const screenStreamRef = useRef<MediaStream | null>(null);
+  const pendingIceCandidatesRef = useRef<RTCIceCandidateInit[]>([]);
+  const [peerVersion, setPeerVersion] = useState(0);
 
   const theme = useTheme();
   const navigate = useNavigate();
@@ -48,9 +51,9 @@ export default function VideoChat() {
 
   const getUserStream = useCallback((): Promise<MediaStream> => {
     const existingStream = localStreamRef.current;
-    if (existingStream?.getTracks().some((track) => track.readyState === "live")) {
-      return Promise.resolve(existingStream);
-    }
+    const hasLiveCamera = existingStream?.getVideoTracks().some((track) => track.readyState === "live");
+    const hasLiveMicrophone = existingStream?.getAudioTracks().some((track) => track.readyState === "live");
+    if (existingStream && hasLiveCamera && hasLiveMicrophone) return Promise.resolve(existingStream);
 
     if (localStreamPromiseRef.current) {
       return localStreamPromiseRef.current;
@@ -64,8 +67,13 @@ export default function VideoChat() {
         autoGainControl: true
       }
     }).then((stream) => {
+      // Replace a partially-ended stream only after the new capture succeeds.
+      existingStream?.getTracks().forEach((track) => track.stop());
       localStreamRef.current = stream;
       setMyStream(stream);
+      setIsCameraOn(stream.getVideoTracks().some((track) => track.enabled && track.readyState === "live"));
+      setIsMicOn(stream.getAudioTracks().some((track) => track.enabled && track.readyState === "live"));
+      localStreamPromiseRef.current = null;
       return stream;
     }).catch((error: unknown) => {
       localStreamPromiseRef.current = null;
@@ -100,16 +108,28 @@ export default function VideoChat() {
     setIsMicOn(nextMicState);
   }, [isMicOn]);
 
+  const flushPendingIceCandidates = useCallback(async () => {
+    const pending = pendingIceCandidatesRef.current.splice(0);
+    for (const candidate of pending) {
+      try {
+        await peerservice.peer.addIceCandidate(new RTCIceCandidate(candidate));
+      } catch (error) {
+        console.warn("Unable to apply a queued ICE candidate:", error);
+      }
+    }
+  }, []);
+
   const sendStream = useCallback(() => {
     const stream = localStreamRef.current;
     if (!stream) return;
 
-    const videoTrack = stream.getVideoTracks()[0];
+    const activeScreenTrack = screenStreamRef.current?.getVideoTracks().find((track) => track.readyState === "live");
+    const videoTrack = activeScreenTrack ?? stream.getVideoTracks().find((track) => track.readyState === "live");
     const audioTrack = stream.getAudioTracks()[0];
     const senders = peerservice.peer.getSenders();
 
     if (videoTrack && !senders.some((sender) => sender.track === videoTrack)) {
-      peerservice.peer.addTrack(videoTrack, stream);
+      peerservice.peer.addTrack(videoTrack, screenStreamRef.current ?? stream);
     }
 
     if (audioTrack && !senders.some((sender) => sender.track === audioTrack)) {
@@ -117,57 +137,65 @@ export default function VideoChat() {
     }
   }, []);
 
-  const handleScreenShare = useCallback(async () => {
-    if (isScreenSharing) {
-      const videoTrack = myStream?.getVideoTracks()[0];
-      const screenSender = peerservice.peer
-        .getSenders()
-        .find((s) => s.track?.kind === "video");
-
-      if (videoTrack && screenSender) {
-        screenSender.replaceTrack(videoTrack);
-      }
-
-      // Stop all tracks in the screen stream
-      screenStream?.getTracks().forEach((track) => track.stop());
-      setScreenStream(null);
-      setMyStream(myStream); // Reset local view back to the webcam stream
-      setIsScreenSharing(false);
-
-      // Renegotiate after stopping screen sharing
-      if (peerservice.peer.signalingState === "stable") {
-        const offer = await peerservice.getOffer();
-        socket?.emit("peer:nego:needed", { offer, to: remoteSocketId });
-      }
-    } else {
-      try {
-        const stream = await navigator.mediaDevices.getDisplayMedia({
-          video: true
-        });
-        setScreenStream(stream);
-        setMyStream(stream);
-        setIsScreenSharing(true);
-
-        const screenTrack = stream.getVideoTracks()[0];
-        const videoSender = peerservice.peer
-          .getSenders()
-          .find((s) => s.track?.kind === "video");
-
-        if (videoSender) {
-          videoSender.replaceTrack(screenTrack);
-        } else {
-          peerservice.peer.addTrack(screenTrack, stream);
-        }
-
-        if (peerservice.peer.signalingState === "stable") {
-          const offer = await peerservice.getOffer();
-          socket?.emit("peer:nego:needed", { offer, to: remoteSocketId });
-        }
-      } catch (error) {
-        console.error("Error sharing screen:", error);
-      }
+  const stopScreenShare = useCallback(async (stopCapture = true) => {
+    const stream = screenStreamRef.current;
+    const cameraTrack = localStreamRef.current?.getVideoTracks().find((track) => track.readyState === "live") ?? null;
+    const videoSender = peerservice.peer.getSenders().find((sender) => sender.track?.kind === "video");
+    try {
+      if (videoSender) await videoSender.replaceTrack(cameraTrack);
+    } catch (error) {
+      console.error("Unable to restore camera after screen sharing:", error);
     }
-  }, [isScreenSharing, myStream, screenStream, remoteSocketId, socket]);
+    if (stopCapture) stream?.getTracks().forEach((track) => track.stop());
+    screenStreamRef.current = null;
+    setScreenStream(null);
+    setIsScreenSharing(false);
+    setMyStream(localStreamRef.current);
+  }, []);
+
+  const handleScreenShare = useCallback(async () => {
+    if (screenStreamRef.current) {
+      await stopScreenShare();
+      return;
+    }
+    if (!navigator.mediaDevices?.getDisplayMedia) {
+      console.warn("Screen sharing is not supported by this browser or context.");
+      return;
+    }
+    try {
+      // getDisplayMedia must be called directly from this user gesture.
+      const stream = await navigator.mediaDevices.getDisplayMedia({ video: true, audio: false });
+      const screenTrack = stream.getVideoTracks()[0];
+      if (!screenTrack) {
+        stream.getTracks().forEach((track) => track.stop());
+        throw new Error("The selected screen did not provide a video track.");
+      }
+      screenStreamRef.current = stream;
+      setScreenStream(stream);
+      setMyStream(stream);
+      setIsScreenSharing(true);
+      const videoSender = peerservice.peer.getSenders().find((sender) => sender.track?.kind === "video");
+      if (videoSender) {
+        await videoSender.replaceTrack(screenTrack);
+      } else if (remoteSocketId) {
+        peerservice.peer.addTrack(screenTrack, stream);
+        // addTrack fires negotiationneeded; the shared handler performs signaling.
+      }
+      screenTrack.addEventListener("ended", () => {
+        void stopScreenShare(false);
+      }, { once: true });
+    } catch (error) {
+      // Picker cancellation is a normal user action, not an application error.
+      if (!(error instanceof DOMException && error.name === "NotAllowedError")) {
+        console.error("Unable to start screen sharing:", error);
+      }
+      screenStreamRef.current?.getTracks().forEach((track) => track.stop());
+      screenStreamRef.current = null;
+      setScreenStream(null);
+      setIsScreenSharing(false);
+      setMyStream(localStreamRef.current);
+    }
+  }, [remoteSocketId, stopScreenShare]);
 
   const setAudioBandwidth = (peerConnection: RTCPeerConnection) => {
     const sender = peerConnection
@@ -175,10 +203,12 @@ export default function VideoChat() {
       .find((s) => s.track && s.track.kind === "audio");
     if (sender) {
       const parameters = sender.getParameters();
-      parameters.encodings[0] = {
-        maxBitrate: 128000 // Set a high bitrate for audio, 128 kbps
-      };
-      sender.setParameters(parameters);
+      if (parameters.encodings.length > 0) {
+        parameters.encodings[0] = { ...parameters.encodings[0], maxBitrate: 128000 };
+        void sender.setParameters(parameters).catch((error) => {
+          console.warn("Unable to apply audio bitrate preference:", error);
+        });
+      }
     }
   };
 
@@ -202,6 +232,7 @@ export default function VideoChat() {
 
       if (peerservice.peer.signalingState === "stable") {
         const answer = await peerservice.getAnswer(offer);
+        await flushPendingIceCandidates();
         setAudioBandwidth(peerservice.peer);
         socket?.emit("answer", { answer, to: from });
         // console.log("Answer created and sent");
@@ -213,20 +244,21 @@ export default function VideoChat() {
         );
       }
     },
-    [getUserStream, socket, sendStream]
+    [getUserStream, socket, sendStream, flushPendingIceCandidates]
   );
 
   const handleIncommingAnswer = useCallback(
     async ({ answer }: Answer) => {
       if (peerservice.peer.signalingState === "have-local-offer") {
         await peerservice.setRemoteDescription(answer);
+        await flushPendingIceCandidates();
         sendStream();
         // console.log("get Answer");
       } else {
         console.warn("Peer not in a proper state to set remote description.");
       }
     },
-    [sendStream]
+    [sendStream, flushPendingIceCandidates]
   );
 
   const handleNegotiationNeeded = useCallback(async () => {
@@ -265,6 +297,7 @@ export default function VideoChat() {
         peerservice.peer.signalingState === "have-local-offer"
       ) {
         const answer = await peerservice.getAnswer(offer);
+        await flushPendingIceCandidates();
         socket?.emit("peer:nego:done", { answer, to: from });
       } else {
         console.warn(
@@ -274,7 +307,7 @@ export default function VideoChat() {
       }
       // console.log("nego:incomming");
     },
-    [socket]
+    [socket, flushPendingIceCandidates]
   );
 
   const handleNegotiationFinal = useCallback(
@@ -284,6 +317,7 @@ export default function VideoChat() {
         peerservice.peer.signalingState === "have-remote-offer"
       ) {
         await peerservice.setRemoteDescription(answer);
+        await flushPendingIceCandidates();
         sendStream();
         // console.log("Final negotiation step completed.");
       } else if (peerservice.peer.signalingState === "stable") {
@@ -295,11 +329,16 @@ export default function VideoChat() {
         );
       }
     },
-    [sendStream]
+    [sendStream, flushPendingIceCandidates]
   );
 
   const handleSkip = useCallback(async () => {
-    // console.log("Skipping current user");
+    // Stop display capture before leaving this stranger; keep camera and mic for the next match.
+    screenStreamRef.current?.getTracks().forEach((track) => track.stop());
+    screenStreamRef.current = null;
+    setScreenStream(null);
+    setIsScreenSharing(false);
+    setMyStream(localStreamRef.current);
 
     peerservice.peer.getTransceivers().forEach((transceiver) => {
       if (transceiver.stop) {
@@ -308,10 +347,8 @@ export default function VideoChat() {
     });
 
     peerservice.peer.getSenders().forEach((sender) => {
-      if (sender.track) {
-        sender.track.stop();
-        peerservice.peer.removeTrack(sender);
-      }
+      // Preserve local capture tracks so they can be reused for the next stranger.
+      peerservice.peer.removeTrack(sender);
     });
 
     peerservice.peer.onicecandidate = null;
@@ -323,6 +360,8 @@ export default function VideoChat() {
       peerservice.peer.close();
     }
     peerservice.initPeer();
+    pendingIceCandidatesRef.current = [];
+    setPeerVersion((version) => version + 1);
     setMessagesArray([]);
     setFlag(false);
 
@@ -333,13 +372,7 @@ export default function VideoChat() {
   }, [socket]);
 
   useEffect(() => {
-    if (flag !== true) {
-      peerservice.peer.addEventListener(
-        "negotiationneeded",
-        handleNegotiationNeeded
-      );
-      setFlag(false);
-    }
+    peerservice.peer.addEventListener("negotiationneeded", handleNegotiationNeeded);
 
     return () => {
       peerservice.peer.removeEventListener(
@@ -347,12 +380,11 @@ export default function VideoChat() {
         handleNegotiationNeeded
       );
     };
-  }, [flag, handleNegotiationNeeded]);
+  }, [flag, handleNegotiationNeeded, peerVersion]);
 
   useEffect(() => {
     const handleTrackEvent = (event: RTCTrackEvent) => {
-      const [incomingStream] = event.streams; // Get the MediaStream from event.streams
-      // console.log("Received track event:", event.track);
+      const incomingStream = event.streams[0] ?? new MediaStream([event.track]);
       setRemoteStream(incomingStream);
     };
 
@@ -361,10 +393,15 @@ export default function VideoChat() {
     return () => {
       peerservice.peer.removeEventListener("track", handleTrackEvent);
     };
-  }, [isScreenSharing, sendStream, flag]);
+  }, [isScreenSharing, sendStream, flag, peerVersion]);
 
   const userDisConnected = useCallback(async () => {
-    // console.log("You've been skipped. Looking for a new user...");
+    // End screen capture when the remote participant leaves; preserve local camera/mic.
+    screenStreamRef.current?.getTracks().forEach((track) => track.stop());
+    screenStreamRef.current = null;
+    setScreenStream(null);
+    setIsScreenSharing(false);
+    setMyStream(localStreamRef.current);
     setFlag(true);
     peerservice.peer.getTransceivers().forEach((transceiver) => {
       if (transceiver.stop) {
@@ -389,6 +426,8 @@ export default function VideoChat() {
     setRemoteSocketId(null);
 
     peerservice.initPeer();
+    pendingIceCandidatesRef.current = [];
+    setPeerVersion((version) => version + 1);
     setMessagesArray([]);
   }, []);
 
@@ -410,19 +449,24 @@ export default function VideoChat() {
         });
       }
     };
-  }, [socket, remoteSocketId]);
+  }, [socket, remoteSocketId, peerVersion]);
 
   useEffect(() => {
     socket?.on("ice-candidate", (data) => {
       if (data.candidate) {
-        const candidate = new RTCIceCandidate(data.candidate);
-        peerservice.peer
-          .addIceCandidate(candidate)
-          .then(() => {
-            // console.log("Added ICE candidate:", candidate);
-          })
+        if (!peerservice.peer.remoteDescription) {
+          // Candidates can arrive before the offer/answer has been applied.
+          // Keep a bounded queue and flush it immediately after remoteDescription.
+          if (pendingIceCandidatesRef.current.length >= 256) {
+            pendingIceCandidatesRef.current.shift();
+          }
+          pendingIceCandidatesRef.current.push(data.candidate as RTCIceCandidateInit);
+          return;
+        }
+        void peerservice.peer
+          .addIceCandidate(new RTCIceCandidate(data.candidate))
           .catch((error) => {
-            console.error("Error adding ICE candidate:", error);
+            console.warn("Unable to apply ICE candidate:", error);
           });
       }
     });
@@ -472,23 +516,16 @@ export default function VideoChat() {
   const handleCleanup = useCallback(() => {
     // console.log("Cleaning up...");
 
-    // Stop camera stream
-    if (myStream) {
-      myStream.getTracks().forEach((track) => track.stop());
-      localStreamRef.current = null;
-      localStreamPromiseRef.current = null;
-      setMyStream(null);
-    }
-
-    // Stop screen sharing stream
-    if (screenStream) {
-      screenStream.getTracks().forEach((track) => {
-        // console.log("Stopping screen sharing track:", track);
-        track.stop(); // Stop each screen sharing track
-      });
-      setScreenStream(null);
-      setIsScreenSharing(false);
-    }
+    // Stop both independent capture sources. During screen sharing myStream is
+    // the display stream, while localStreamRef still owns camera and microphone.
+    localStreamRef.current?.getTracks().forEach((track) => track.stop());
+    screenStreamRef.current?.getTracks().forEach((track) => track.stop());
+    localStreamRef.current = null;
+    screenStreamRef.current = null;
+    localStreamPromiseRef.current = null;
+    setMyStream(null);
+    setScreenStream(null);
+    setIsScreenSharing(false);
 
     // Disconnect the socket
     if (socket) {
@@ -502,8 +539,7 @@ export default function VideoChat() {
     }
 
     navigate("/");
-    window.location.reload();
-  }, [myStream, navigate, screenStream, socket]);
+  }, [navigate, socket]);
 
   return (
     <div className="flex flex-col lg:flex-row w-screen bg-gradient-to-b from-gray-200 to-gray-400 dark:from-gray-800 dark:to-gray-900 transition-colors duration-300">
