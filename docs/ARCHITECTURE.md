@@ -31,7 +31,7 @@ The application server owns socket identity, queue membership, active pairing, a
 - The server places the guest socket into matchmaking.
 - The client registers its match/signaling listeners before requesting queue entry, and repeats that request after a socket reconnect. The server pairs two eligible sockets and notifies both. One side is designated offerer to avoid simultaneous initial offers.
 - Peers exchange SDP and ICE through the signaling server. The server checks that each message comes from the currently paired socket and routes it only to that peer.
-- WebRTC attempts a direct encrypted path. ICE uses configured STUN/TURN servers; TURN is required for restrictive networks.
+- WebRTC attempts a direct encrypted path. ICE configuration is fetched from `/api/ice-servers`. The backend returns STUN plus authenticated, short-lived TURN credentials when configured. TURN over TLS/TCP 443 is the preferred fallback on restrictive networks. Without a deployed TURN service, STUN-only connections may fail.
 - A participant may skip, leave, or disconnect. Both sides discard the old peer connection and tracks before another match starts.
 
 ## Matchmaking contract
