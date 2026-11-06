@@ -284,6 +284,7 @@ export default function VideoChat() {
     async (remoteId: string) => {
       setFlag(false);
       setRemoteSocketId(remoteId);
+      await peerservice.configureIceServers();
       await getUserStream();
       sendStream();
       const offer = await peerservice.getOffer();
@@ -298,6 +299,7 @@ export default function VideoChat() {
     async ({ offer, from }: Offer) => {
       setFlag(false);
       setRemoteSocketId(from);
+      await peerservice.configureIceServers();
       await getUserStream();
 
       if (peerservice.peer.signalingState === "stable") {
@@ -363,9 +365,8 @@ export default function VideoChat() {
 
   const handleNegotiationIncomming = useCallback(
     async ({ offer, from }: Offer) => {
-      if (
-        peerservice.peer.signalingState === "stable"
-      ) {
+      await peerservice.configureIceServers();
+      if (peerservice.peer.signalingState === "stable") {
         const answer = await peerservice.getAnswer(offer);
         await flushPendingIceCandidates();
         socket?.emit("peer:nego:done", { answer, to: from });
