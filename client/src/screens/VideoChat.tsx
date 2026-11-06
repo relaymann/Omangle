@@ -32,6 +32,11 @@ function MediaVideo({ stream, muted = false, className = "" }: { stream: MediaSt
   return <video ref={videoRef} className={className} autoPlay playsInline controls={!muted} muted={muted} />;
 }
 
+function getSenderForKind(peer: RTCPeerConnection, kind: "audio" | "video"): RTCRtpSender | undefined {
+  return peer.getSenders().find((sender) => sender.track?.kind === kind)
+    ?? peer.getTransceivers().find((transceiver) => transceiver.receiver.track.kind === kind)?.sender;
+}
+
 interface Offer {
   offer: RTCSessionDescriptionInit;
   from: string;
@@ -128,7 +133,7 @@ export default function VideoChat() {
       setIsCameraOn(nextCameraState);
       setMediaError(null);
       if (!screenStreamRef.current) {
-        const sender = peerservice.peer.getSenders().find((item) => item.track?.kind === "video");
+        const sender = getSenderForKind(peerservice.peer, "video");
         if (sender && sender.track !== videoTrack) await sender.replaceTrack(videoTrack);
         else if (!sender && remoteSocketId && localStreamRef.current) peerservice.peer.addTrack(videoTrack, localStreamRef.current);
       }
@@ -150,7 +155,7 @@ export default function VideoChat() {
       audioTrack.enabled = nextMicState;
       setIsMicOn(nextMicState);
       setMediaError(null);
-      const sender = peerservice.peer.getSenders().find((item) => item.track?.kind === "audio");
+      const sender = getSenderForKind(peerservice.peer, "audio");
       if (sender && sender.track !== audioTrack) await sender.replaceTrack(audioTrack);
       else if (!sender && remoteSocketId && localStreamRef.current) peerservice.peer.addTrack(audioTrack, localStreamRef.current);
     } catch (error) {
@@ -177,13 +182,18 @@ export default function VideoChat() {
     const activeScreenTrack = screenStreamRef.current?.getVideoTracks().find((track) => track.readyState === "live");
     const videoTrack = activeScreenTrack ?? stream.getVideoTracks().find((track) => track.readyState === "live");
     const audioTrack = stream.getAudioTracks()[0];
-    const senders = peerservice.peer.getSenders();
+    const videoSender = getSenderForKind(peerservice.peer, "video");
+    const audioSender = getSenderForKind(peerservice.peer, "audio");
 
-    if (videoTrack && !senders.some((sender) => sender.track === videoTrack)) {
+    if (videoTrack && videoSender && videoSender.track !== videoTrack) {
+      void videoSender.replaceTrack(videoTrack).catch((error) => console.warn("Unable to replace video sender track:", error));
+    } else if (videoTrack && !videoSender) {
       peerservice.peer.addTrack(videoTrack, screenStreamRef.current ?? stream);
     }
 
-    if (audioTrack && !senders.some((sender) => sender.track === audioTrack)) {
+    if (audioTrack && audioSender && audioSender.track !== audioTrack) {
+      void audioSender.replaceTrack(audioTrack).catch((error) => console.warn("Unable to replace audio sender track:", error));
+    } else if (audioTrack && !audioSender) {
       peerservice.peer.addTrack(audioTrack, stream);
     }
   }, []);
@@ -191,7 +201,7 @@ export default function VideoChat() {
   const stopScreenShare = useCallback(async (stopCapture = true) => {
     const stream = screenStreamRef.current;
     const cameraTrack = localStreamRef.current?.getVideoTracks().find((track) => track.readyState === "live") ?? null;
-    const videoSender = peerservice.peer.getSenders().find((sender) => sender.track?.kind === "video");
+    const videoSender = getSenderForKind(peerservice.peer, "video");
     try {
       if (videoSender) await videoSender.replaceTrack(cameraTrack);
     } catch (error) {
