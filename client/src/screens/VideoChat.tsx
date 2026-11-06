@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useSocket } from "../context/SocketProvider";
 import peerservice from "../service/peer";
 import ReactPlayer from "react-player";
@@ -38,31 +38,49 @@ export default function VideoChat() {
   const [isScreenSharing, setIsScreenSharing] = useState(false);
   const [isCameraOn, setIsCameraOn] = useState(true);
   const [isMicOn, setIsMicOn] = useState(true);
+  const localStreamRef = useRef<MediaStream | null>(null);
+  const localStreamPromiseRef = useRef<Promise<MediaStream> | null>(null);
 
   const theme = useTheme();
   const navigate = useNavigate();
 
   const loaderColor = theme.theme === "dark" ? "#D1D5DB" : "#4B5563";
 
-  const getUserStream = useCallback(async () => {
-    const stream = await navigator.mediaDevices.getUserMedia({
+  const getUserStream = useCallback((): Promise<MediaStream> => {
+    const existingStream = localStreamRef.current;
+    if (existingStream?.getTracks().some((track) => track.readyState === "live")) {
+      return Promise.resolve(existingStream);
+    }
+
+    if (localStreamPromiseRef.current) {
+      return localStreamPromiseRef.current;
+    }
+
+    const capturePromise = navigator.mediaDevices.getUserMedia({
       video: true,
       audio: {
         echoCancellation: true,
         noiseSuppression: true,
-        autoGainControl: true,
-        sampleRate: 48000, // CD-quality audio sample rate
-        sampleSize: 16, // Higher sample size
-        channelCount: 2 // Stereo audio
+        autoGainControl: true
       }
+    }).then((stream) => {
+      localStreamRef.current = stream;
+      setMyStream(stream);
+      return stream;
+    }).catch((error: unknown) => {
+      localStreamPromiseRef.current = null;
+      throw error;
     });
-    // const processedStream = processAudio(stream);
-    setMyStream(stream);
+
+    localStreamPromiseRef.current = capturePromise;
+    return capturePromise;
   }, []);
 
   useEffect(() => {
-    getUserStream();
-  }, [getUserStream, myStream]);
+    void getUserStream().catch((error: unknown) => {
+      console.error("Unable to access camera or microphone:", error);
+    });
+  }, [getUserStream]);
 
   const toggleCamera = useCallback(() => {
     if (myStream) {
@@ -124,28 +142,21 @@ export default function VideoChat() {
   
 
   const sendStream = useCallback(() => {
-    if (myStream) {
-      // console.log("send Stream");
-      const videoTrack = myStream.getVideoTracks()[0];
-      const audioTrack = myStream.getAudioTracks()[0];
+    const stream = localStreamRef.current;
+    if (!stream) return;
 
-      const senders = peerservice.peer.getSenders();
+    const videoTrack = stream.getVideoTracks()[0];
+    const audioTrack = stream.getAudioTracks()[0];
+    const senders = peerservice.peer.getSenders();
 
-      if (videoTrack) {
-        const videoSender = senders.find((s) => s.track === videoTrack);
-        if (!videoSender) {
-          peerservice.peer.addTrack(videoTrack, myStream); // Add video first
-        }
-      }
-
-      if (audioTrack) {
-        const audioSender = senders.find((s) => s.track === audioTrack);
-        if (!audioSender) {
-          peerservice.peer.addTrack(audioTrack, myStream); // Add audio second
-        }
-      }
+    if (videoTrack && !senders.some((sender) => sender.track === videoTrack)) {
+      peerservice.peer.addTrack(videoTrack, stream);
     }
-  }, [myStream]);
+
+    if (audioTrack && !senders.some((sender) => sender.track === audioTrack)) {
+      peerservice.peer.addTrack(audioTrack, stream);
+    }
+  }, []);
 
   const handleScreenShare = useCallback(async () => {
     if (isScreenSharing) {
@@ -523,11 +534,10 @@ export default function VideoChat() {
 
     // Stop camera stream
     if (myStream) {
-      myStream.getTracks().forEach((track) => {
-        // console.log("Stopping track:", track);
-        track.stop(); // Stop each media track (video/audio)
-      });
-      setMyStream(null); // Clear the state to ensure the stream is stopped
+      myStream.getTracks().forEach((track) => track.stop());
+      localStreamRef.current = null;
+      localStreamPromiseRef.current = null;
+      setMyStream(null);
     }
 
     // Stop screen sharing stream
