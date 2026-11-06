@@ -1,8 +1,11 @@
 const LogoContent = () => (
-  <>
-    <rect width="100" height="100" rx="8" fill="#ff5a00" />
-    <circle cx="40" cy="50" r="30" fill="#050505" />
-    <circle cx="40" cy="50" r="10" fill="#ff5a00" />
-  </>
+  <image
+    href="/logo.png"
+    x="0"
+    y="0"
+    width="100"
+    height="100"
+    preserveAspectRatio="xMidYMid meet"
+  />
 );
 export default LogoContent;
