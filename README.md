@@ -90,3 +90,15 @@ A local-only browser test cannot prove remote delivery. Record unsupported devic
 The frontend can be hosted on a static/CDN platform. The signaling backend needs a persistent Node-capable host that supports WebSockets and correct proxy timeouts. Production requires HTTPS/WSS, an exact frontend origin allowlist, configured STUN/TURN infrastructure, and browser/device testing. Public STUN servers alone are not a production connectivity strategy.
 
 See docs/ARCHITECTURE.md and docs/ROADMAP.md before extending the system.
+
+## Restrictive Wi-Fi / TURN setup
+
+STUN-only WebRTC often fails behind symmetric NATs and restrictive firewalls. The backend now exposes `GET /api/ice-servers` and creates Coturn-compatible, expiring HMAC-SHA1 TURN REST credentials. Configure the backend only (never a `VITE_` variable):
+
+~~~dotenv
+TURN_URLS=turn:turn.example.com:3478?transport=udp,turn:turn.example.com:3478?transport=tcp,turns:turn.example.com:443?transport=tcp
+TURN_SHARED_SECRET=use-a-long-random-secret-matching-coturn
+TURN_CREDENTIAL_TTL_SECONDS=600
+~~~
+
+Coturn must enable `use-auth-secret` and the same `static-auth-secret`, have a valid TLS certificate, listen for TURN TLS on TCP 443, and expose its configured UDP relay-port range through the firewall. Keep direct ICE paths enabled; TURN is the fallback and consumes relay bandwidth. TCP/TLS 443 improves compatibility but cannot defeat a network that blocks the website or the relay hostname itself. With no TURN configuration, Omangle falls back to STUN and restrictive networks may still fail.
