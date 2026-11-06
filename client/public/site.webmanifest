@@ -1,0 +1,16 @@
+{
+  "name": "Omangle",
+  "short_name": "Omangle",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#ff5a00",
+  "theme_color": "#ff5a00",
+  "icons": [
+    {
+      "src": "/logo.png",
+      "sizes": "1536x1536",
+      "type": "image/png",
+      "purpose": "any"
+    }
+  ]
+}
