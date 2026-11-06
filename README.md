@@ -1,5 +1,9 @@
 # Omangle
 
+## Brand identity
+
+Omangle uses the orange-and-black wordmark in `client/public/logo.svg`. Keep product UI, metadata, icons, and public documentation branded as Omangle. Do not refer to the inherited product name in user-facing copy or retain its old domain in SEO files. The production domain has not yet been set, so do not invent canonical URLs.
+
 Omangle is a real-time random conversation platform inspired by Omegle and modern WebRTC chat services. The goal is a fast, mobile-friendly experience for meeting people through video, voice, and text.
 
 > This repository contains an inherited early prototype. This update establishes a more reliable, secure, and testable foundation; it does not certify the existing media UI as production-ready.

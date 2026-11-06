@@ -1,4 +1,3 @@
 User-agent: *
 Allow: /
 
-Sitemap: https://rhinomeet.com/sitemap.xml
