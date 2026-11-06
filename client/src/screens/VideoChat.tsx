@@ -270,38 +270,19 @@ export default function VideoChat() {
     [sendStream]
   );
 
-  const modifySDP = (sdp: string) => {
-    return sdp.replace(
-      /a=fmtp:111 .*opus.*/,
-      "a=fmtp:111 maxplaybackrate=48000;stereo=1;sprop-stereo=1;maxaveragebitrate=510000;useinbandfec=1"
-    );
-  };
-
   const handleNegotiationNeeded = useCallback(async () => {
-    if (peerservice.peer.signalingState === "stable") {
-      const currentOffer = await peerservice.getOffer();
-
-      if (currentOffer && currentOffer.sdp) {
-        const modifiedSDP = modifySDP(currentOffer.sdp);
-
-        // Create a new RTCSessionDescription with the modified SDP
-        const modifiedOffer = new RTCSessionDescription({
-          type: currentOffer.type,
-          sdp: modifiedSDP
-        });
-
-        setAudioBandwidth(peerservice.peer);
-
-        socket?.emit("peer:nego:needed", {
-          offer: modifiedOffer,
-          to: remoteSocketId
-        });
-
-        // console.log("Negotiation initiated with modified SDP.");
-      }
-    } else {
-      console.warn("Peer is not in a stable state for negotiation.");
+    if (peerservice.peer.signalingState !== "stable") {
+      return;
     }
+
+    const offer = await peerservice.getOffer();
+    if (!offer) return;
+
+    setAudioBandwidth(peerservice.peer);
+    socket?.emit("peer:nego:needed", {
+      offer,
+      to: remoteSocketId
+    });
   }, [remoteSocketId, socket]);
 
   // const handleNegotiationNeeded = useCallback(async () => {
