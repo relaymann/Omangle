@@ -16,6 +16,8 @@ export default function Home() {
       if (!socket) {
         const newSocket = io(import.meta.env.VITE_API_SERVER_URL);
         setSocket(newSocket);
+      } else if (!socket.connected) {
+        socket.connect();
       }
       navigate("/chat");
     },
@@ -40,7 +42,7 @@ export default function Home() {
           {/* Logo Section */}
           <div className="flex flex-col items-center justify-center text-center mb-6 lg:mb-0 w-full lg:w-auto">
             <img
-              src="/logo.svg"
+              src="/logo.png"
               alt="Omangle"
               width={640}
               height={640}

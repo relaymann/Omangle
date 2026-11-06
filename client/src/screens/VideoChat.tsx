@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useSocket } from "../context/SocketProvider";
 import peerservice from "../service/peer";
-import ReactPlayer from "react-player";
 import { Button } from "../components/ui/button";
 import Messages from "../components/Messages";
 import { ScreenShare, StepBack, StepForward } from "lucide-react";
@@ -9,6 +8,29 @@ import { ClipLoader } from "react-spinners"; // Import the spinner
 import { useTheme } from "../components/theme-provider";
 import { useNavigate } from "react-router-dom";
 import "../css/VideoChat.css";
+
+function MediaVideo({ stream, muted = false, className = "" }: { stream: MediaStream; muted?: boolean; className?: string }) {
+  const videoRef = useRef<HTMLVideoElement>(null);
+
+  useEffect(() => {
+    const video = videoRef.current;
+    if (!video) return;
+    video.srcObject = stream;
+    const startPlayback = () => {
+      void video.play().catch((error: unknown) => {
+        console.warn("Video autoplay was blocked; playback needs a user gesture:", error);
+      });
+    };
+    if (video.readyState >= HTMLMediaElement.HAVE_METADATA) startPlayback();
+    else video.addEventListener("loadedmetadata", startPlayback, { once: true });
+    return () => {
+      video.removeEventListener("loadedmetadata", startPlayback);
+      if (video.srcObject === stream) video.srcObject = null;
+    };
+  }, [stream]);
+
+  return <video ref={videoRef} className={className} autoPlay playsInline muted={muted} />;
+}
 
 interface Offer {
   offer: RTCSessionDescriptionInit;
@@ -38,6 +60,8 @@ export default function VideoChat() {
   const [isScreenSharing, setIsScreenSharing] = useState(false);
   const [isCameraOn, setIsCameraOn] = useState(true);
   const [isMicOn, setIsMicOn] = useState(true);
+  const [mediaError, setMediaError] = useState<string | null>(null);
+  const screenShareBusyRef = useRef(false);
   const localStreamRef = useRef<MediaStream | null>(null);
   const localStreamPromiseRef = useRef<Promise<MediaStream> | null>(null);
   const screenStreamRef = useRef<MediaStream | null>(null);
@@ -85,28 +109,55 @@ export default function VideoChat() {
   }, []);
 
   useEffect(() => {
-    void getUserStream().catch((error: unknown) => {
+    void getUserStream().then(() => setMediaError(null)).catch((error: unknown) => {
       console.error("Unable to access camera or microphone:", error);
+      setMediaError("Camera and microphone access is unavailable. Check browser permissions and try again.");
     });
   }, [getUserStream]);
 
-  const toggleCamera = useCallback(() => {
-    const videoTrack = localStreamRef.current?.getVideoTracks()[0];
-    if (!videoTrack || videoTrack.readyState !== "live") return;
+  const toggleCamera = useCallback(async () => {
+    try {
+      let videoTrack = localStreamRef.current?.getVideoTracks().find((track) => track.readyState === "live");
+      if (!videoTrack) {
+        const stream = await getUserStream();
+        videoTrack = stream.getVideoTracks().find((track) => track.readyState === "live");
+      }
+      if (!videoTrack) throw new Error("No active camera track is available.");
+      const nextCameraState = !isCameraOn;
+      videoTrack.enabled = nextCameraState;
+      setIsCameraOn(nextCameraState);
+      setMediaError(null);
+      if (!screenStreamRef.current) {
+        const sender = peerservice.peer.getSenders().find((item) => item.track?.kind === "video");
+        if (sender && sender.track !== videoTrack) await sender.replaceTrack(videoTrack);
+        else if (!sender && remoteSocketId) sendStream();
+      }
+    } catch (error) {
+      console.error("Unable to toggle camera:", error);
+      setMediaError("Could not start the camera. Check its permission or whether another app is using it.");
+    }
+  }, [getUserStream, isCameraOn, remoteSocketId, sendStream]);
 
-    const nextCameraState = !isCameraOn;
-    videoTrack.enabled = nextCameraState;
-    setIsCameraOn(nextCameraState);
-  }, [isCameraOn]);
-
-  const toggleMic = useCallback(() => {
-    const audioTrack = localStreamRef.current?.getAudioTracks()[0];
-    if (!audioTrack || audioTrack.readyState !== "live") return;
-
-    const nextMicState = !isMicOn;
-    audioTrack.enabled = nextMicState;
-    setIsMicOn(nextMicState);
-  }, [isMicOn]);
+  const toggleMic = useCallback(async () => {
+    try {
+      let audioTrack = localStreamRef.current?.getAudioTracks().find((track) => track.readyState === "live");
+      if (!audioTrack) {
+        const stream = await getUserStream();
+        audioTrack = stream.getAudioTracks().find((track) => track.readyState === "live");
+      }
+      if (!audioTrack) throw new Error("No active microphone track is available.");
+      const nextMicState = !isMicOn;
+      audioTrack.enabled = nextMicState;
+      setIsMicOn(nextMicState);
+      setMediaError(null);
+      const sender = peerservice.peer.getSenders().find((item) => item.track?.kind === "audio");
+      if (sender && sender.track !== audioTrack) await sender.replaceTrack(audioTrack);
+      else if (!sender && remoteSocketId) sendStream();
+    } catch (error) {
+      console.error("Unable to toggle microphone:", error);
+      setMediaError("Could not start the microphone. Check its permission or whether another app is using it.");
+    }
+  }, [getUserStream, isMicOn, remoteSocketId, sendStream]);
 
   const flushPendingIceCandidates = useCallback(async () => {
     const pending = pendingIceCandidatesRef.current.splice(0);
@@ -154,14 +205,17 @@ export default function VideoChat() {
   }, []);
 
   const handleScreenShare = useCallback(async () => {
+    if (screenShareBusyRef.current) return;
     if (screenStreamRef.current) {
-      await stopScreenShare();
+      screenShareBusyRef.current = true;
+      try { await stopScreenShare(); } finally { screenShareBusyRef.current = false; }
       return;
     }
     if (!navigator.mediaDevices?.getDisplayMedia) {
-      console.warn("Screen sharing is not supported by this browser or context.");
+      setMediaError("Screen sharing is not supported by this browser. Use a supported browser over HTTPS.");
       return;
     }
+    screenShareBusyRef.current = true;
     try {
       // getDisplayMedia must be called directly from this user gesture.
       const stream = await navigator.mediaDevices.getDisplayMedia({ video: true, audio: false });
@@ -174,6 +228,7 @@ export default function VideoChat() {
       setScreenStream(stream);
       setMyStream(stream);
       setIsScreenSharing(true);
+      setMediaError(null);
       const videoSender = peerservice.peer.getSenders().find((sender) => sender.track?.kind === "video");
       if (videoSender) {
         await videoSender.replaceTrack(screenTrack);
@@ -194,6 +249,9 @@ export default function VideoChat() {
       setScreenStream(null);
       setIsScreenSharing(false);
       setMyStream(localStreamRef.current);
+      setMediaError("Screen sharing could not be started. Try again and allow the browser screen picker.");
+    } finally {
+      screenShareBusyRef.current = false;
     }
   }, [remoteSocketId, stopScreenShare]);
 
@@ -216,12 +274,14 @@ export default function VideoChat() {
     async (remoteId: string) => {
       setFlag(false);
       setRemoteSocketId(remoteId);
+      await getUserStream();
+      sendStream();
       const offer = await peerservice.getOffer();
 
       socket?.emit("offer", { offer, to: remoteId });
       // console.log("user joined");
     },
-    [socket]
+    [getUserStream, sendStream, socket]
   );
 
   const handleIncommingOffer = useCallback(
@@ -231,12 +291,13 @@ export default function VideoChat() {
       await getUserStream();
 
       if (peerservice.peer.signalingState === "stable") {
-        const answer = await peerservice.getAnswer(offer);
+        await peerservice.peer.setRemoteDescription(offer);
+        sendStream();
+        const answer = await peerservice.peer.createAnswer();
+        await peerservice.peer.setLocalDescription(answer);
         await flushPendingIceCandidates();
         setAudioBandwidth(peerservice.peer);
-        socket?.emit("answer", { answer, to: from });
-        // console.log("Answer created and sent");
-        sendStream();
+        socket?.emit("answer", { answer: peerservice.peer.localDescription, to: from });
       } else {
         console.warn(
           "Cannot handle incoming offer in signaling state:",
@@ -293,8 +354,7 @@ export default function VideoChat() {
   const handleNegotiationIncomming = useCallback(
     async ({ offer, from }: Offer) => {
       if (
-        peerservice.peer.signalingState === "stable" ||
-        peerservice.peer.signalingState === "have-local-offer"
+        peerservice.peer.signalingState === "stable"
       ) {
         const answer = await peerservice.getAnswer(offer);
         await flushPendingIceCandidates();
@@ -312,10 +372,7 @@ export default function VideoChat() {
 
   const handleNegotiationFinal = useCallback(
     async ({ answer }: NegotiationDone) => {
-      if (
-        peerservice.peer.signalingState === "have-local-offer" ||
-        peerservice.peer.signalingState === "have-remote-offer"
-      ) {
+      if (peerservice.peer.signalingState === "have-local-offer") {
         await peerservice.setRemoteDescription(answer);
         await flushPendingIceCandidates();
         sendStream();
@@ -548,14 +605,7 @@ export default function VideoChat() {
         {/* My Stream */}
         {myStream ? (
           <div className="relative w-full h-64 lg:h-1/2">
-            <ReactPlayer
-              className="absolute inset-0 rounded-lg"
-              url={myStream}
-              playing
-              muted
-              width="100%"
-              height="100%"
-            />
+            <MediaVideo stream={myStream} muted className="absolute inset-0 h-full w-full rounded-lg object-cover" />
             <div className="absolute bottom-0 left-0 bg-gradient-to-t from-black via-transparent to-transparent p-3 text-white text-sm rounded-tl-lg">
               My Stream
             </div>
@@ -572,14 +622,7 @@ export default function VideoChat() {
         {/* Remote Stream */}
         {remoteStream ? (
           <div className="relative w-full h-64 lg:h-1/2">
-            <ReactPlayer
-              className="absolute inset-0 rounded-lg"
-              url={remoteStream}
-              playing
-              muted={false}
-              width="100%"
-              height="100%"
-            />
+            <MediaVideo stream={remoteStream} className="absolute inset-0 h-full w-full rounded-lg object-cover" />
             <div className="absolute bottom-0 left-0 bg-gradient-to-t from-black via-transparent to-transparent p-3 text-white text-sm rounded-tl-lg">
               Remote Stream
             </div>
@@ -635,16 +678,12 @@ export default function VideoChat() {
           </Button>
         </div>
 
+        {mediaError && <p role="alert" className="mx-4 mt-3 rounded-md border border-red-400 bg-red-50 px-3 py-2 text-sm text-red-800 dark:bg-red-950 dark:text-red-200">{mediaError}</p>}
+
         {/* Messages Area */}
         <div className="flex-1 max-h-[calc(100vh-128px)] overflow-auto p-4 bg-white dark:bg-gray-800 rounded-lg shadow-inner">
           {screenStream ? (
-            <ReactPlayer
-              className="w-full h-full rounded-lg"
-              url={screenStream}
-              playing
-              width="100%"
-              height="100%"
-            />
+            <MediaVideo stream={screenStream} muted className="h-full w-full rounded-lg object-contain" />
           ) : (
             <Messages
               remoteSocketId={remoteSocketId}
