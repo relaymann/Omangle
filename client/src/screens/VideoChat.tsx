@@ -130,13 +130,13 @@ export default function VideoChat() {
       if (!screenStreamRef.current) {
         const sender = peerservice.peer.getSenders().find((item) => item.track?.kind === "video");
         if (sender && sender.track !== videoTrack) await sender.replaceTrack(videoTrack);
-        else if (!sender && remoteSocketId) sendStream();
+        else if (!sender && remoteSocketId && localStreamRef.current) peerservice.peer.addTrack(videoTrack, localStreamRef.current);
       }
     } catch (error) {
       console.error("Unable to toggle camera:", error);
       setMediaError("Could not start the camera. Check its permission or whether another app is using it.");
     }
-  }, [getUserStream, isCameraOn, remoteSocketId, sendStream]);
+  }, [getUserStream, isCameraOn, remoteSocketId]);
 
   const toggleMic = useCallback(async () => {
     try {
@@ -152,12 +152,12 @@ export default function VideoChat() {
       setMediaError(null);
       const sender = peerservice.peer.getSenders().find((item) => item.track?.kind === "audio");
       if (sender && sender.track !== audioTrack) await sender.replaceTrack(audioTrack);
-      else if (!sender && remoteSocketId) sendStream();
+      else if (!sender && remoteSocketId && localStreamRef.current) peerservice.peer.addTrack(audioTrack, localStreamRef.current);
     } catch (error) {
       console.error("Unable to toggle microphone:", error);
       setMediaError("Could not start the microphone. Check its permission or whether another app is using it.");
     }
-  }, [getUserStream, isMicOn, remoteSocketId, sendStream]);
+  }, [getUserStream, isMicOn, remoteSocketId]);
 
   const flushPendingIceCandidates = useCallback(async () => {
     const pending = pendingIceCandidatesRef.current.splice(0);
