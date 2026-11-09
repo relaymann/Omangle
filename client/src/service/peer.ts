@@ -12,6 +12,10 @@ class PeerService {
     initPeer() {
         if (this.peer && this.peer.signalingState !== "closed") { this.peer.getTransceivers().forEach((t) => t.stop()); this.peer.close(); }
         this.peer = new RTCPeerConnection({ iceServers: this.iceServers, iceCandidatePoolSize: 2, bundlePolicy: "max-bundle" });
+        // Create media sections before negotiation so users can match without granting
+        // camera or microphone permission, then attach either track independently later.
+        this.peer.addTransceiver("audio", { direction: "sendrecv" });
+        this.peer.addTransceiver("video", { direction: "sendrecv" });
     }
     async configureIceServers(): Promise<boolean> {
         if (!apiBaseUrl) return false;

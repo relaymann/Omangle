@@ -1,4 +1,4 @@
-import { useCallback } from "react";
+import { useCallback, useState } from "react";
 import { Button } from "../components/ui/button";
 import { useSocket } from "../context/SocketProvider";
 import { io } from "socket.io-client";
@@ -9,12 +9,28 @@ import { Helmet } from "react-helmet-async";
 export default function Home() {
   const { socket, setSocket } = useSocket();
   const navigate = useNavigate();
+  const [connectionError, setConnectionError] = useState<string | null>(null);
 
   const handleStartCall = useCallback(
     (e: React.MouseEvent<HTMLButtonElement>) => {
       e.preventDefault();
+      setConnectionError(null);
       if (!socket) {
-        const newSocket = io(import.meta.env.VITE_API_SERVER_URL);
+        const apiUrl = String(import.meta.env.VITE_API_SERVER_URL ?? "").trim().replace(/\/+$/, "");
+        if (!apiUrl) {
+          console.error("VITE_API_SERVER_URL is missing. Configure it to point to the Render backend.");
+          setConnectionError("Omangle matchmaking is not configured yet. Please try again later.");
+          return;
+        }
+        const newSocket = io(apiUrl, {
+          autoConnect: true,
+          reconnection: true,
+          reconnectionAttempts: Infinity,
+          reconnectionDelay: 500,
+          reconnectionDelayMax: 5000,
+          timeout: 20000,
+          transports: ["polling", "websocket"]
+        });
         setSocket(newSocket);
       } else if (!socket.connected) {
         socket.connect();
@@ -38,6 +54,7 @@ export default function Home() {
         />
       </Helmet>
       <main className="flex flex-col justify-center h-full mx-auto w-full p-4 lg:p-8">
+        {connectionError && <p role="alert" className="mx-auto mb-4 max-w-xl rounded-lg border border-red-400 bg-red-50 px-4 py-3 text-sm text-red-800">{connectionError}</p>}
         <div className="w-full flex flex-col lg:flex-row justify-center items-center lg:justify-evenly mx-auto">
           {/* Logo Section */}
           <div className="flex flex-col items-center justify-center text-center mb-6 lg:mb-0 w-full lg:w-auto">

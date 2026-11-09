@@ -63,12 +63,16 @@ export default function VideoChat() {
     Array<{ sender: string; message: string }>
   >([]);
   const [isScreenSharing, setIsScreenSharing] = useState(false);
-  const [isCameraOn, setIsCameraOn] = useState(true);
-  const [isMicOn, setIsMicOn] = useState(true);
+  const [isCameraOn, setIsCameraOn] = useState(false);
+  const [isMicOn, setIsMicOn] = useState(false);
+  const [matchStatus, setMatchStatus] = useState("Connecting to matchmaking...");
+  const [cameraPermission, setCameraPermission] = useState<"idle" | "granted" | "denied">("idle");
+  const [micPermission, setMicPermission] = useState<"idle" | "granted" | "denied">("idle");
   const [mediaError, setMediaError] = useState<string | null>(null);
   const screenShareBusyRef = useRef(false);
   const localStreamRef = useRef<MediaStream | null>(null);
-  const localStreamPromiseRef = useRef<Promise<MediaStream> | null>(null);
+  const cameraPromiseRef = useRef<Promise<MediaStreamTrack> | null>(null);
+  const microphonePromiseRef = useRef<Promise<MediaStreamTrack> | null>(null);
   const screenStreamRef = useRef<MediaStream | null>(null);
   const pendingIceCandidatesRef = useRef<RTCIceCandidateInit[]>([]);
   const [peerVersion, setPeerVersion] = useState(0);
@@ -78,91 +82,96 @@ export default function VideoChat() {
 
   const loaderColor = theme.theme === "dark" ? "#D1D5DB" : "#4B5563";
 
-  const getUserStream = useCallback((): Promise<MediaStream> => {
-    const existingStream = localStreamRef.current;
-    const hasLiveCamera = existingStream?.getVideoTracks().some((track) => track.readyState === "live");
-    const hasLiveMicrophone = existingStream?.getAudioTracks().some((track) => track.readyState === "live");
-    if (existingStream && hasLiveCamera && hasLiveMicrophone) return Promise.resolve(existingStream);
+  const captureDevice = useCallback(async (kind: "video" | "audio"): Promise<MediaStreamTrack> => {
+    const current = localStreamRef.current ?? new MediaStream();
+    const existing = current.getTracks().find((track) => track.kind === kind && track.readyState === "live");
+    if (existing) return existing;
 
-    if (localStreamPromiseRef.current) {
-      return localStreamPromiseRef.current;
-    }
+    const promiseRef = kind === "video" ? cameraPromiseRef : microphonePromiseRef;
+    if (promiseRef.current) return promiseRef.current;
 
-    const capturePromise = navigator.mediaDevices.getUserMedia({
-      video: true,
-      audio: {
-        echoCancellation: true,
-        noiseSuppression: true,
-        autoGainControl: true
+    const request = navigator.mediaDevices.getUserMedia(
+      kind === "video"
+        ? { video: { width: { ideal: 1280, max: 1920 }, height: { ideal: 720, max: 1080 }, frameRate: { ideal: 24, max: 30 } }, audio: false }
+        : { video: false, audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true } }
+    ).then((captured) => {
+      const track = captured.getTracks().find((item) => item.kind === kind);
+      if (!track) {
+        captured.getTracks().forEach((item) => item.stop());
+        throw new Error(kind === "video" ? "The camera did not provide a video track." : "The microphone did not provide an audio track.");
       }
-    }).then((stream) => {
-      // Replace a partially-ended stream only after the new capture succeeds.
-      existingStream?.getTracks().forEach((track) => track.stop());
-      localStreamRef.current = stream;
-      setMyStream(stream);
-      setIsCameraOn(stream.getVideoTracks().some((track) => track.enabled && track.readyState === "live"));
-      setIsMicOn(stream.getAudioTracks().some((track) => track.enabled && track.readyState === "live"));
-      localStreamPromiseRef.current = null;
-      return stream;
+      const aggregate = localStreamRef.current ?? new MediaStream();
+      aggregate.getTracks().filter((item) => item.kind === kind).forEach((item) => {
+        aggregate.removeTrack(item);
+        if (item !== track) item.stop();
+      });
+      aggregate.addTrack(track);
+      localStreamRef.current = aggregate;
+      setMyStream(new MediaStream(aggregate.getTracks()));
+      track.addEventListener("ended", () => {
+        if (kind === "video") { setIsCameraOn(false); setCameraPermission("idle"); }
+        else { setIsMicOn(false); setMicPermission("idle"); }
+        const sender = getSenderForKind(peerservice.peer, kind);
+        if (sender?.track === track) void sender.replaceTrack(null).catch((error) => console.warn("Unable to detach ended media track:", error));
+      }, { once: true });
+      if (kind === "video") { setCameraPermission("granted"); setIsCameraOn(true); }
+      else { setMicPermission("granted"); setIsMicOn(true); }
+      const sender = getSenderForKind(peerservice.peer, kind);
+      if (sender) void sender.replaceTrack(track).catch((error) => console.warn("Unable to attach newly enabled media:", error));
+      else if (remoteSocketId) peerservice.peer.addTrack(track, aggregate);
+      return track;
     }).catch((error: unknown) => {
-      localStreamPromiseRef.current = null;
+      if (kind === "video") { setCameraPermission("denied"); setIsCameraOn(false); }
+      else { setMicPermission("denied"); setIsMicOn(false); }
       throw error;
-    });
+    }).finally(() => { promiseRef.current = null; });
 
-    localStreamPromiseRef.current = capturePromise;
-    return capturePromise;
-  }, []);
+    promiseRef.current = request;
+    return request;
+  }, [remoteSocketId]);
 
   useEffect(() => {
-    void getUserStream().then(() => setMediaError(null)).catch((error: unknown) => {
-      console.error("Unable to access camera or microphone:", error);
-      setMediaError("Camera and microphone access is unavailable. Check browser permissions and try again.");
-    });
-  }, [getUserStream]);
+    if (!navigator.mediaDevices?.getUserMedia) {
+      setMediaError("Camera and microphone capture are unavailable in this browser or page context. Use HTTPS and a supported browser.");
+    }
+    return () => {
+      // Capture tracks are stopped by the explicit page cleanup below.
+    };
+  }, []);
 
   const toggleCamera = useCallback(async () => {
     try {
-      let videoTrack = localStreamRef.current?.getVideoTracks().find((track) => track.readyState === "live");
-      if (!videoTrack) {
-        const stream = await getUserStream();
-        videoTrack = stream.getVideoTracks().find((track) => track.readyState === "live");
+      const current = localStreamRef.current?.getVideoTracks().find((track) => track.readyState === "live");
+      if (!current) {
+        await captureDevice("video");
+        setMediaError(null);
+        return;
       }
-      if (!videoTrack) throw new Error("No active camera track is available.");
-      const nextCameraState = !isCameraOn;
-      videoTrack.enabled = nextCameraState;
-      setIsCameraOn(nextCameraState);
+      current.enabled = !current.enabled;
+      setIsCameraOn(current.enabled);
       setMediaError(null);
-      if (!screenStreamRef.current) {
-        const sender = getSenderForKind(peerservice.peer, "video");
-        if (sender && sender.track !== videoTrack) await sender.replaceTrack(videoTrack);
-        else if (!sender && remoteSocketId && localStreamRef.current) peerservice.peer.addTrack(videoTrack, localStreamRef.current);
-      }
     } catch (error) {
-      console.error("Unable to toggle camera:", error);
-      setMediaError("Could not start the camera. Check its permission or whether another app is using it.");
+      console.error("Unable to access camera:", error);
+      setMediaError("Camera access was denied or unavailable. You can still use Omangle with your microphone, screen sharing, or text.");
     }
-  }, [getUserStream, isCameraOn, remoteSocketId]);
+  }, [captureDevice]);
 
   const toggleMic = useCallback(async () => {
     try {
-      let audioTrack = localStreamRef.current?.getAudioTracks().find((track) => track.readyState === "live");
-      if (!audioTrack) {
-        const stream = await getUserStream();
-        audioTrack = stream.getAudioTracks().find((track) => track.readyState === "live");
+      const current = localStreamRef.current?.getAudioTracks().find((track) => track.readyState === "live");
+      if (!current) {
+        await captureDevice("audio");
+        setMediaError(null);
+        return;
       }
-      if (!audioTrack) throw new Error("No active microphone track is available.");
-      const nextMicState = !isMicOn;
-      audioTrack.enabled = nextMicState;
-      setIsMicOn(nextMicState);
+      current.enabled = !current.enabled;
+      setIsMicOn(current.enabled);
       setMediaError(null);
-      const sender = getSenderForKind(peerservice.peer, "audio");
-      if (sender && sender.track !== audioTrack) await sender.replaceTrack(audioTrack);
-      else if (!sender && remoteSocketId && localStreamRef.current) peerservice.peer.addTrack(audioTrack, localStreamRef.current);
     } catch (error) {
-      console.error("Unable to toggle microphone:", error);
-      setMediaError("Could not start the microphone. Check its permission or whether another app is using it.");
+      console.error("Unable to access microphone:", error);
+      setMediaError("Microphone access was denied or unavailable. You can still use Omangle with your camera, screen sharing, or text.");
     }
-  }, [getUserStream, isMicOn, remoteSocketId]);
+  }, [captureDevice]);
 
   const flushPendingIceCandidates = useCallback(async () => {
     const pending = pendingIceCandidatesRef.current.splice(0);
@@ -181,7 +190,7 @@ export default function VideoChat() {
 
     const activeScreenTrack = screenStreamRef.current?.getVideoTracks().find((track) => track.readyState === "live");
     const videoTrack = activeScreenTrack ?? stream.getVideoTracks().find((track) => track.readyState === "live");
-    const audioTrack = stream.getAudioTracks()[0];
+    const audioTrack = stream.getAudioTracks().find((track) => track.readyState === "live");
     const videoSender = getSenderForKind(peerservice.peer, "video");
     const audioSender = getSenderForKind(peerservice.peer, "audio");
 
@@ -284,15 +293,15 @@ export default function VideoChat() {
     async (remoteId: string) => {
       setFlag(false);
       setRemoteSocketId(remoteId);
+      setMatchStatus("Match found — establishing connection...");
       await peerservice.configureIceServers();
-      await getUserStream();
       sendStream();
       const offer = await peerservice.getOffer();
 
       socket?.emit("offer", { offer, to: remoteId });
       // console.log("user joined");
     },
-    [getUserStream, sendStream, socket]
+    [sendStream, socket]
   );
 
   const handleIncommingOffer = useCallback(
@@ -300,7 +309,6 @@ export default function VideoChat() {
       setFlag(false);
       setRemoteSocketId(from);
       await peerservice.configureIceServers();
-      await getUserStream();
 
       if (peerservice.peer.signalingState === "stable") {
         await peerservice.peer.setRemoteDescription(offer);
@@ -317,7 +325,7 @@ export default function VideoChat() {
         );
       }
     },
-    [getUserStream, socket, sendStream, flushPendingIceCandidates]
+    [socket, sendStream, flushPendingIceCandidates]
   );
 
   const handleIncommingAnswer = useCallback(
@@ -435,6 +443,7 @@ export default function VideoChat() {
 
     setRemoteStream(null);
     setRemoteSocketId(null);
+    setMatchStatus("Looking for someone...");
 
     socket?.emit("skip");
   }, [socket]);
@@ -454,6 +463,7 @@ export default function VideoChat() {
     const handleTrackEvent = (event: RTCTrackEvent) => {
       const incomingStream = event.streams[0] ?? new MediaStream([event.track]);
       setRemoteStream(incomingStream);
+      setMatchStatus("Connected");
     };
 
     peerservice.peer.addEventListener("track", handleTrackEvent);
@@ -546,12 +556,15 @@ export default function VideoChat() {
 
   useEffect(() => {
     const handleSocketConnect = () => {
+      setMatchStatus("Looking for someone...");
       socket?.emit("matchmaking:join");
     };
 
     socket?.on("connect", handleSocketConnect);
     socket?.on("disconnect", userDisConnected);
     socket?.on("user:connect", handleUserJoined);
+    socket?.on("match:found", () => setMatchStatus("Match found — connecting..."));
+    socket?.on("connect_error", () => setMatchStatus("Unable to reach matchmaking server. Retrying..."));
     socket?.on("offer", handleIncommingOffer);
     socket?.on("answer", handleIncommingAnswer);
     socket?.on("peer:nego:needed", handleNegotiationIncomming);
@@ -565,6 +578,8 @@ export default function VideoChat() {
       socket?.off("connect", handleSocketConnect);
       socket?.off("disconnect", userDisConnected);
       socket?.off("user:connect", handleUserJoined);
+      socket?.off("match:found");
+      socket?.off("connect_error");
       socket?.off("offer", handleIncommingOffer);
       socket?.off("answer", handleIncommingAnswer);
       socket?.off("peer:nego:needed", handleNegotiationIncomming);
@@ -590,13 +605,15 @@ export default function VideoChat() {
     screenStreamRef.current?.getTracks().forEach((track) => track.stop());
     localStreamRef.current = null;
     screenStreamRef.current = null;
-    localStreamPromiseRef.current = null;
+    cameraPromiseRef.current = null;
+    microphonePromiseRef.current = null;
     setMyStream(null);
     setScreenStream(null);
     setIsScreenSharing(false);
 
     // Disconnect the socket
     if (socket) {
+      socket.emit("matchmaking:leave");
       socket.disconnect();
     }
 
@@ -624,9 +641,7 @@ export default function VideoChat() {
         ) : (
           <div className="flex flex-col items-center justify-center w-full h-64 lg:h-1/2 bg-gray-400 dark:bg-gray-700 rounded-lg shadow-md">
             <ClipLoader color={loaderColor} size={50} />
-            <p className="text-gray-600 dark:text-gray-300 mt-2">
-              Loading your stream...
-            </p>
+            <p className="text-gray-600 dark:text-gray-300 mt-2">Camera is optional</p>
           </div>
         )}
 
@@ -642,7 +657,7 @@ export default function VideoChat() {
           <div className="flex flex-col items-center justify-center w-full h-64 lg:h-1/2 bg-gray-400 dark:bg-gray-700 rounded-lg shadow-md">
             <ClipLoader color={loaderColor} size={50} />
             <p className="text-gray-600 dark:text-gray-300 mt-2">
-              Waiting for user to connect...
+              {matchStatus}
             </p>
           </div>
         )}
@@ -682,13 +697,14 @@ export default function VideoChat() {
             </span>
           </Button>
           <Button className="flex-1 p-2 gap-2 bg-gray-600 text-white rounded-md" onClick={toggleCamera}>
-            <span>{isCameraOn ? "Turn Off Camera" : "Turn On Camera"}</span>
+            <span>{isCameraOn ? "Turn Off Camera" : cameraPermission === "denied" ? "Retry Camera" : "Enable Camera"}</span>
           </Button>
           <Button className="flex-1 p-2 gap-2 bg-gray-600 text-white rounded-md" onClick={toggleMic}>
-            <span>{isMicOn ? "Turn Off Mic" : "Turn On Mic"}</span>
+            <span>{isMicOn ? "Turn Off Mic" : micPermission === "denied" ? "Retry Mic" : "Enable Mic"}</span>
           </Button>
         </div>
 
+        <p className="mx-4 mt-2 text-xs text-gray-600 dark:text-gray-300">Camera: {cameraPermission === "granted" ? (isCameraOn ? "on" : "off") : cameraPermission === "denied" ? "permission denied" : "not enabled"} · Microphone: {micPermission === "granted" ? (isMicOn ? "on" : "off") : micPermission === "denied" ? "permission denied" : "not enabled"}</p>
         {mediaError && <p role="alert" className="mx-4 mt-3 rounded-md border border-red-400 bg-red-50 px-3 py-2 text-sm text-red-800 dark:bg-red-950 dark:text-red-200">{mediaError}</p>}
 
         {/* Messages Area */}
