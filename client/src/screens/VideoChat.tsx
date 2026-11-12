@@ -499,6 +499,18 @@ export default function VideoChat() {
     socket?.emit("skip");
   }, [socket]);
 
+  // Prevent silent offer/ICE failures from leaving a stale match active forever.
+  useEffect(() => {
+    if (!remoteSocketId || matchStatus === "Connected" || !matchInProgressRef.current) return;
+    const timeout = window.setTimeout(() => {
+      if (matchInProgressRef.current && peerservice.peer.connectionState !== "connected") {
+        console.warn("WebRTC connection timed out; releasing the stale match.");
+        setMatchStatus("Connection timed out — finding another person...");
+        void handleSkip();
+      }
+    }, 25_000);
+    return () => window.clearTimeout(timeout);
+  }, [remoteSocketId, matchStatus, peerVersion, handleSkip]);
   useEffect(() => {
     const peerConnection = peerservice.peer;
     peerConnection.addEventListener("negotiationneeded", handleNegotiationNeeded);
@@ -514,7 +526,7 @@ export default function VideoChat() {
     const handleConnectionState = () => {
       const state = peerConnection.connectionState;
       if (state === "connected") setMatchStatus("Connected");
-      else if (state === "failed") {
+      else if (state === "failed" || peerConnection.iceConnectionState === "failed") {
         console.warn("WebRTC connection failed; returning both participants to matchmaking.");
         setMatchStatus("Connection failed — finding another person...");
         if (matchInProgressRef.current) void handleSkip();
