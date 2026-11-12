@@ -75,6 +75,9 @@ export default function VideoChat() {
   const microphonePromiseRef = useRef<Promise<MediaStreamTrack> | null>(null);
   const screenStreamRef = useRef<MediaStream | null>(null);
   const pendingIceCandidatesRef = useRef<RTCIceCandidateInit[]>([]);
+  const matchRoleRef = useRef<"offerer" | "answerer" | null>(null);
+  const negotiationReadyRef = useRef(false);
+  const matchInProgressRef = useRef(false);
   const [peerVersion, setPeerVersion] = useState(0);
 
   const theme = useTheme();
@@ -291,38 +294,79 @@ export default function VideoChat() {
 
   const handleUserJoined = useCallback(
     async (remoteId: string) => {
+      if (!remoteId || matchInProgressRef.current) return;
+      matchInProgressRef.current = true;
+      matchRoleRef.current = "offerer";
+      negotiationReadyRef.current = false;
+      pendingIceCandidatesRef.current = [];
       setFlag(false);
       setRemoteSocketId(remoteId);
       setMatchStatus("Match found — establishing connection...");
-      await peerservice.configureIceServers();
-      sendStream();
-      const offer = await peerservice.getOffer();
-
-      socket?.emit("offer", { offer, to: remoteId });
-      // console.log("user joined");
+      try {
+        await peerservice.configureIceServers();
+        if (peerservice.peer.signalingState !== "stable") throw new Error(`Peer is not ready to offer (${peerservice.peer.signalingState}).`);
+        sendStream();
+        const offer = await peerservice.getOffer();
+        if (!offer || !socket?.connected) throw new Error("Match signaling socket is unavailable.");
+        socket.emit("offer", { offer, to: remoteId });
+      } catch (error) {
+        console.error("Initial WebRTC offer failed:", error);
+        setMatchStatus("Connection failed — finding another person...");
+        matchInProgressRef.current = false;
+        matchRoleRef.current = null;
+        negotiationReadyRef.current = false;
+        socket?.emit("skip");
+      }
     },
     [sendStream, socket]
   );
 
+  const handleMatchFound = useCallback((match: { peerId?: string; role?: "offerer" | "answerer" }) => {
+    if (!match?.peerId || (match.role !== "offerer" && match.role !== "answerer")) {
+      console.error("Received an invalid matchmaking assignment:", match);
+      setMatchStatus("Match setup failed — reconnecting to matchmaking...");
+      socket?.emit("matchmaking:leave");
+      socket?.emit("matchmaking:join");
+      return;
+    }
+    setMatchStatus("Match found — establishing connection...");
+    if (match.role === "offerer") {
+      void handleUserJoined(match.peerId);
+      return;
+    }
+    if (matchInProgressRef.current) return;
+    matchInProgressRef.current = true;
+    matchRoleRef.current = "answerer";
+    negotiationReadyRef.current = false;
+    pendingIceCandidatesRef.current = [];
+    setRemoteSocketId(match.peerId);
+  }, [handleUserJoined, socket]);
+
   const handleIncommingOffer = useCallback(
     async ({ offer, from }: Offer) => {
-      setFlag(false);
-      setRemoteSocketId(from);
-      await peerservice.configureIceServers();
-
-      if (peerservice.peer.signalingState === "stable") {
+      try {
+        setFlag(false);
+        matchInProgressRef.current = true;
+        matchRoleRef.current = "answerer";
+        setRemoteSocketId(from);
+        await peerservice.configureIceServers();
+        if (peerservice.peer.signalingState !== "stable") throw new Error(`Cannot accept offer in signaling state ${peerservice.peer.signalingState}.`);
         await peerservice.peer.setRemoteDescription(offer);
         sendStream();
         const answer = await peerservice.peer.createAnswer();
         await peerservice.peer.setLocalDescription(answer);
         await flushPendingIceCandidates();
         setAudioBandwidth(peerservice.peer);
-        socket?.emit("answer", { answer: peerservice.peer.localDescription, to: from });
-      } else {
-        console.warn(
-          "Cannot handle incoming offer in signaling state:",
-          peerservice.peer.signalingState
-        );
+        negotiationReadyRef.current = true;
+        if (!socket?.connected) throw new Error("Match signaling socket disconnected before answer.");
+        socket.emit("answer", { answer: peerservice.peer.localDescription, to: from });
+      } catch (error) {
+        console.error("Unable to answer the incoming WebRTC offer:", error);
+        setMatchStatus("Connection setup failed — finding another person...");
+        matchInProgressRef.current = false;
+        matchRoleRef.current = null;
+        negotiationReadyRef.current = false;
+        socket?.emit("skip");
       }
     },
     [socket, sendStream, flushPendingIceCandidates]
@@ -333,6 +377,7 @@ export default function VideoChat() {
       if (peerservice.peer.signalingState === "have-local-offer") {
         await peerservice.setRemoteDescription(answer);
         await flushPendingIceCandidates();
+        negotiationReadyRef.current = true;
         sendStream();
         // console.log("get Answer");
       } else {
@@ -343,9 +388,8 @@ export default function VideoChat() {
   );
 
   const handleNegotiationNeeded = useCallback(async () => {
-    if (peerservice.peer.signalingState !== "stable") {
-      return;
-    }
+    if (!remoteSocketId || !negotiationReadyRef.current || !matchRoleRef.current ||
+        peerservice.peer.signalingState !== "stable" || !socket?.connected) return;
 
     const offer = await peerservice.getOffer();
     if (!offer) return;
@@ -373,6 +417,10 @@ export default function VideoChat() {
 
   const handleNegotiationIncomming = useCallback(
     async ({ offer, from }: Offer) => {
+      // Either participant may initiate later renegotiation (for example,
+      // when starting screen share); role restrictions apply only to the
+      // initial offer, not subsequent media changes.
+      if (!negotiationReadyRef.current) return;
       await peerservice.configureIceServers();
       if (peerservice.peer.signalingState === "stable") {
         const answer = await peerservice.getAnswer(offer);
@@ -443,35 +491,42 @@ export default function VideoChat() {
 
     setRemoteStream(null);
     setRemoteSocketId(null);
+    matchRoleRef.current = null;
+    negotiationReadyRef.current = false;
+    matchInProgressRef.current = false;
     setMatchStatus("Looking for someone...");
 
     socket?.emit("skip");
   }, [socket]);
 
   useEffect(() => {
-    peerservice.peer.addEventListener("negotiationneeded", handleNegotiationNeeded);
-
-    return () => {
-      peerservice.peer.removeEventListener(
-        "negotiationneeded",
-        handleNegotiationNeeded
-      );
-    };
+    const peerConnection = peerservice.peer;
+    peerConnection.addEventListener("negotiationneeded", handleNegotiationNeeded);
+    return () => peerConnection.removeEventListener("negotiationneeded", handleNegotiationNeeded);
   }, [flag, handleNegotiationNeeded, peerVersion]);
 
   useEffect(() => {
+    const peerConnection = peerservice.peer;
     const handleTrackEvent = (event: RTCTrackEvent) => {
       const incomingStream = event.streams[0] ?? new MediaStream([event.track]);
       setRemoteStream(incomingStream);
-      setMatchStatus("Connected");
     };
-
-    peerservice.peer.addEventListener("track", handleTrackEvent);
-
+    const handleConnectionState = () => {
+      const state = peerConnection.connectionState;
+      if (state === "connected") setMatchStatus("Connected");
+      else if (state === "failed") {
+        console.warn("WebRTC connection failed; returning both participants to matchmaking.");
+        setMatchStatus("Connection failed — finding another person...");
+        if (matchInProgressRef.current) void handleSkip();
+      } else if (state === "disconnected") setMatchStatus("Connection interrupted — attempting to recover...");
+    };
+    peerConnection.addEventListener("track", handleTrackEvent);
+    peerConnection.addEventListener("connectionstatechange", handleConnectionState);
     return () => {
-      peerservice.peer.removeEventListener("track", handleTrackEvent);
+      peerConnection.removeEventListener("connectionstatechange", handleConnectionState);
+      peerConnection.removeEventListener("track", handleTrackEvent);
     };
-  }, [isScreenSharing, sendStream, flag, peerVersion]);
+  }, [peerVersion, handleSkip]);
 
   const userDisConnected = useCallback(async () => {
     // End screen capture when the remote participant leaves; preserve local camera/mic.
@@ -502,6 +557,10 @@ export default function VideoChat() {
 
     setRemoteStream(null);
     setRemoteSocketId(null);
+    matchRoleRef.current = null;
+    negotiationReadyRef.current = false;
+    matchInProgressRef.current = false;
+    setMatchStatus("Looking for someone...");
 
     peerservice.initPeer();
     pendingIceCandidatesRef.current = [];
@@ -518,15 +577,14 @@ export default function VideoChat() {
   }, [socket, userDisConnected]);
 
   useEffect(() => {
-    peerservice.peer.onicecandidate = (event) => {
-      if (event.candidate) {
-        // console.log("Sending ICE candidate:", event.candidate);
-        socket?.emit("ice-candidate", {
-          candidate: event.candidate,
-          to: remoteSocketId
-        });
+    const peerConnection = peerservice.peer;
+    const handleIceCandidate = (event: RTCPeerConnectionIceEvent) => {
+      if (event.candidate && remoteSocketId && socket?.connected) {
+        socket.emit("ice-candidate", { candidate: event.candidate, to: remoteSocketId });
       }
     };
+    peerConnection.addEventListener("icecandidate", handleIceCandidate);
+    return () => peerConnection.removeEventListener("icecandidate", handleIceCandidate);
   }, [socket, remoteSocketId, peerVersion]);
 
   useEffect(() => {
@@ -562,9 +620,23 @@ export default function VideoChat() {
 
     socket?.on("connect", handleSocketConnect);
     socket?.on("disconnect", userDisConnected);
-    socket?.on("user:connect", handleUserJoined);
-    socket?.on("match:found", () => setMatchStatus("Match found — connecting..."));
+    socket?.on("match:found", handleMatchFound);
     socket?.on("connect_error", () => setMatchStatus("Unable to reach matchmaking server. Retrying..."));
+    const handleProtocolError = (error: { code?: string }) => {
+      console.error("Matchmaking/signaling protocol error:", error?.code ?? "unknown");
+      if (matchInProgressRef.current) {
+        setMatchStatus("Signaling failed — finding another person...");
+        matchInProgressRef.current = false;
+        matchRoleRef.current = null;
+        negotiationReadyRef.current = false;
+        socket?.emit("skip");
+      } else {
+        setMatchStatus("Matchmaking error. Reconnecting...");
+        socket?.emit("matchmaking:leave");
+        socket?.emit("matchmaking:join");
+      }
+    };
+    socket?.on("protocol:error", handleProtocolError);
     socket?.on("offer", handleIncommingOffer);
     socket?.on("answer", handleIncommingAnswer);
     socket?.on("peer:nego:needed", handleNegotiationIncomming);
@@ -577,9 +649,9 @@ export default function VideoChat() {
     return () => {
       socket?.off("connect", handleSocketConnect);
       socket?.off("disconnect", userDisConnected);
-      socket?.off("user:connect", handleUserJoined);
-      socket?.off("match:found");
+      socket?.off("match:found", handleMatchFound);
       socket?.off("connect_error");
+      socket?.off("protocol:error", handleProtocolError);
       socket?.off("offer", handleIncommingOffer);
       socket?.off("answer", handleIncommingAnswer);
       socket?.off("peer:nego:needed", handleNegotiationIncomming);
@@ -591,7 +663,7 @@ export default function VideoChat() {
     handleIncommingOffer,
     handleNegotiationFinal,
     handleNegotiationIncomming,
-    handleUserJoined,
+    handleMatchFound,
     socket,
     userDisConnected
   ]);
